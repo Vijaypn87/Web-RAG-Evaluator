@@ -506,7 +506,7 @@ function App() {
           <p className="kicker">Tutorial project</p>
           <h1>Web RAG Evaluator</h1>
         </div>
-        <div className="status-pill"><span /> Local mode</div>
+        <div className="status-pill"><span /> Live mode</div>
       </header>
 
       <p className="intro">
