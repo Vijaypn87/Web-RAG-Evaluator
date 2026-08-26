@@ -2,6 +2,10 @@
 
 A full-stack **Retrieval-Augmented Generation (RAG)** application that ingests a public webpage, retrieves relevant content, generates grounded answers, and evaluates the quality of the RAG pipeline.
 
+## 🚀 Live Demo
+
+[**Try Web RAG Evaluator →**](https://web-rag-evaluator-frontend.onrender.com)
+
 ![Web RAG Evaluator](https://github.com/user-attachments/assets/77f9548e-9b65-4b2c-a2b1-aa9e39473555)
 
 ## ✨ Features
