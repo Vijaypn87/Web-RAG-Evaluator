@@ -1,324 +1,138 @@
 # Web RAG Evaluator
 
-A full-stack **Retrieval-Augmented Generation (RAG)** application that ingests a public webpage, retrieves relevant content, generates grounded answers, and evaluates the quality of the RAG pipeline.
+Ask questions about any public webpage, get answers with checkable citations, and **measure** how good those answers are.
 
-## 🚀 Live Demo
+[![Live demo](https://img.shields.io/badge/Live_demo-Open-16a34a?style=flat-square&logo=render&logoColor=white)](https://web-rag-evaluator-frontend.onrender.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-1f2328?style=flat-square)](LICENSE)
+![Tests](https://img.shields.io/badge/Tests-91_passing-16a34a?style=flat-square&logo=pytest&logoColor=white)
 
-[**Try Web RAG Evaluator →**](https://web-rag-evaluator-frontend.onrender.com)
+> The live demo runs on free hosting. If it has been idle, the first load takes up to a minute while the server wakes up.
 
-The demo runs on free hosting and Google Gemini's free tier. The server sleeps
-when idle, so the first visit can take up to a minute to wake it up, and usage
-is limited per visitor to keep it free.
+## ◆ Tech stack
 
-![Web RAG Evaluator](https://github.com/user-attachments/assets/77f9548e-9b65-4b2c-a2b1-aa9e39473555)
+![Python](https://img.shields.io/badge/Python-1f2328?style=flat-square&logo=python&logoColor=3776AB)
+![FastAPI](https://img.shields.io/badge/FastAPI-1f2328?style=flat-square&logo=fastapi&logoColor=009688)
+![React](https://img.shields.io/badge/React-1f2328?style=flat-square&logo=react&logoColor=61DAFB)
+![TypeScript](https://img.shields.io/badge/TypeScript-1f2328?style=flat-square&logo=typescript&logoColor=3178C6)
+![Vite](https://img.shields.io/badge/Vite-1f2328?style=flat-square&logo=vite&logoColor=646CFF)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-1f2328?style=flat-square)
+![Google Gemini](https://img.shields.io/badge/Google_Gemini-1f2328?style=flat-square&logo=googlegemini&logoColor=8E75B2)
+![Ollama](https://img.shields.io/badge/Ollama-1f2328?style=flat-square&logo=ollama&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI_(optional)-1f2328?style=flat-square)
+![Trafilatura](https://img.shields.io/badge/Trafilatura-1f2328?style=flat-square&logo=python&logoColor=FFD43B)
+![pytest](https://img.shields.io/badge/pytest-1f2328?style=flat-square&logo=pytest&logoColor=0A9EDC)
+![Render](https://img.shields.io/badge/Render-1f2328?style=flat-square&logo=render&logoColor=white)
 
-## ✨ Features
+## ◆ Features
 
-* 🌐 Ingest a public webpage and extract its main content using **Context.dev**
-* ✂️ Split webpage content into retrieval-ready Markdown chunks
-* 🧠 Generate embeddings using **OpenAI**
-* 🔎 Retrieve the **4 most relevant chunks** using persistent **Chroma**
-* 💬 Generate answers using the **OpenAI Responses API**
-* 📎 Validate citations against retrieved source chunks
-* 📊 Evaluate RAG performance across multiple quality dimensions
-* ⚡ Full-stack interface built with **React, Vite, and TypeScript**
-* 🔐 Keep API keys securely on the backend using environment variables
+- **Load any public webpage:** its main content is extracted, split into chunks and embedded into a vector store.
+- **Grounded answers:** each answer uses only the retrieved passages and cites them as `[S1]`, `[S2]`, … Click a citation to highlight its passage.
+- **Built-in evaluation:** every answer is scored on retrieval relevance, groundedness, correctness and citation validity.
+- **Experiment framework:** compare chunk sizes and top-k with Hit@k, MRR and 95% confidence intervals.
+- **Runs free:** Ollama on your own computer, or Google Gemini's free tier when hosted. OpenAI is optional.
 
-## 🛠️ Tech Stack
-
-### Backend
-
-* Python
-* FastAPI
-* Context.dev
-* OpenAI API
-* Chroma
-
-### Frontend
-
-* React
-* TypeScript
-* Vite
-* CSS
-
-## 🏗️ Architecture
+## ◆ How it works
 
 ```text
-                    Public Webpage
-                          │
-                          ▼
-                    Context.dev
-                          │
-                          ▼
-                    Markdown Content
-                          │
-                          ▼
-                       Chunking
-                          │
-                          ▼
-                  OpenAI Embeddings
-                          │
-                          ▼
-                    Chroma Vector DB
-                          │
-                 ┌────────┴────────┐
-                 │                 │
-              Question          Retrieval
-                 │                 │
-                 └────────┬────────┘
-                          ▼
-                 OpenAI Responses API
-                          │
-                          ▼
-                Grounded Answer
-                          │
-                          ▼
-              Citation Validation
-                          │
-                          ▼
-                  RAG Evaluation
+Webpage ─▶ Extract main text ─▶ Chunk ─▶ Embed ─▶ ChromaDB
+                                                     │
+Question ─▶ Embed ─▶ Retrieve top 4 chunks ◀─────────┘
+                           │
+                           ▼
+           LLM answer with [S#] citations ─▶ Citation check ─▶ LLM judge scores
 ```
 
-## 📁 Project Structure
+## ◆ Evaluation
 
-```text
-web-rag-evaluator/
-│
-├── backend/
-│   ├── main.py          # FastAPI routes and application state
-│   └── rag.py           # RAG pipeline and evaluation logic
-│
-├── frontend/
-│   └── src/
-│       ├── App.tsx      # React application interface
-│       └── index.css    # Application styling
-│
-├── experiments/
-│   ├── run_experiment.py  # Chunk size × top-k grid runner
-│   ├── metrics.py         # Hit@k, MRR, summaries
-│   └── datasets/          # Question sets with evidence phrases
-│
-├── tests/               # pytest suite (no external API calls)
-│
-├── .env.example
-├── .gitignore
-├── README.md
-└── requirements.txt
-```
-
-## 🔄 RAG Pipeline
-
-The application follows a simple end-to-end RAG workflow:
-
-1. **Ingestion** — A public webpage URL is submitted to the backend.
-2. **Content extraction** — Context.dev converts the webpage into main-content Markdown.
-3. **Chunking** — The Markdown is divided into smaller sections around headings and paragraph boundaries.
-4. **Embedding** — OpenAI embeddings are generated for the chunks in batches.
-5. **Storage** — Embeddings and chunk content are stored in a persistent local Chroma collection.
-6. **Retrieval** — A user's question is embedded and the four closest chunks are retrieved.
-7. **Generation** — The OpenAI Responses API generates an answer using only the supplied retrieved passages.
-8. **Citation validation** — Returned citations are checked against the source labels provided to the model.
-
-## 📊 RAG Evaluation
-
-The project includes a built-in evaluation workflow.
-
-Each evaluation case runs through the normal RAG pipeline and is then scored using a structured OpenAI evaluator.
-
-The evaluation measures:
-
-| Metric              | Description                                                     |
-| ------------------- | --------------------------------------------------------------- |
-| Retrieval Relevance | How relevant the retrieved passages are to the question         |
-| Groundedness        | How well the generated answer is supported by retrieved context |
-| Answer Correctness  | How closely the answer matches the expected answer              |
-| Citation Validity   | Whether the generated citations correspond to supplied sources  |
-
-Each metric is scored from **0 to 1**.
-
-The final score is the average of the four metrics:
-
-```text
-Overall Score =
-(Retrieval + Groundedness + Correctness + Citation Validity) / 4
-```
-
-A case is considered **passed when the overall score is ≥ 0.70**.
-
-**How citation validity is scored.** It is measured on the citations the model
-actually wrote, *before* invented labels are removed from the displayed answer:
-
-* The exact "not enough information" answer scores 1 when it has no citations.
-* Any other answer with no citations scores 0.
-* Otherwise the score is the share of written labels (for example `[S2]`) that
-  point to a passage really supplied to the model. Grouped citations such as
-  `[S1, S2]` are counted as `[S1][S2]`.
-
-A run can contain up to **10 cases**. If one case fails (for example an API
-timeout), that row shows **Error** and the other cases still return scores.
-
-### Running the tests
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest
-```
-
-The tests do not call OpenAI or Context.dev.
-
-## 🚀 Setup
-
-### 1. Clone the repository
-
-```powershell
-git clone <your-repository-url>
-cd web-rag-evaluator
-```
-
-### 2. Create a Python virtual environment
-
-```powershell
-python -m venv .venv
-```
-
-### 3. Install backend dependencies
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-Create `.env` from the provided example:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-The example is set up for **free mode**, which needs no API keys:
-
-| Part | Free mode (default) | Paid mode |
+| Metric | Measures | Scored by |
 |---|---|---|
-| Webpage → Markdown | `PAGE_FETCHER=local` (trafilatura, runs locally) | `PAGE_FETCHER=contextdev` + `CONTEXT_DEV_API_KEY` |
-| Embeddings, answers, judge | `LLM_PROVIDER=ollama` (models run on your computer) | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` |
+| Retrieval relevance | Are the retrieved passages relevant to the question? | LLM judge |
+| Groundedness | Is the answer supported by those passages? | LLM judge |
+| Answer correctness | Does it match the expected answer? | LLM judge |
+| Citation validity | Share of written citations that point to a real passage | Code |
 
-For free mode, install [Ollama](https://ollama.com), start it, and download
-the two models once:
+The overall score is the average of the four (0–1), and a case **passes at ≥ 0.70**.
 
-```powershell
+## ◆ Quick start (free, local)
+
+**Requirements:** Python 3.10+, Node.js 20+, and [Ollama](https://ollama.com).
+
+```bash
+git clone https://github.com/Vijaypn87/Web-RAG-Evaluator.git
+cd Web-RAG-Evaluator
+
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt   # macOS/Linux: .venv/bin/python
+cp .env.example .env                                     # already set up for free mode
+
 ollama pull llama3.2
 ollama pull nomic-embed-text
 ```
 
-`llama3.2` (3B) needs about 2 GB of memory and runs well on a 4 GB laptop GPU.
-For a stronger judge, pull a larger model such as `qwen2.5:7b` and set
-`OLLAMA_EVALUATOR_MODEL`. Small local models answer and judge less reliably
-than large hosted ones, so say which models you used when you report results.
+Start the backend and the frontend in two terminals:
 
-**Never commit `.env` to GitHub.**
-
-### 5. Start the backend
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --port 8000
+```bash
+.venv/Scripts/python -m uvicorn backend.main:app --reload --port 8000
 ```
 
-Backend:
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Open **http://localhost:5173**.
+
+<details>
+<summary><b>Configuration</b></summary>
+
+All settings live in `.env`. See [`.env.example`](.env.example) for the full list.
+
+| Setting | Options | Default |
+|---|---|---|
+| `LLM_PROVIDER` | `ollama` · `gemini` · `openai` | `openai` (the example sets `ollama`) |
+| `PAGE_FETCHER` | `local` (Trafilatura) · `contextdev` | `local` when no Context.dev key is set |
+| `GEMINI_API_KEY` | Free key from [Google AI Studio](https://aistudio.google.com/apikey) | – |
+| `RATE_LIMIT_PER_HOUR` / `DAILY_LIMIT` | Request limits for a public demo (0 = off) | `30` / `500` |
+
+</details>
+
+<details>
+<summary><b>Deploy for free (Render + Gemini)</b></summary>
+
+1. Get a free key at [Google AI Studio](https://aistudio.google.com/apikey).
+2. On the Render **backend** service, set `LLM_PROVIDER=gemini`, `PAGE_FETCHER=local`, `GEMINI_API_KEY=<your key>` and `FRONTEND_ORIGIN=<frontend URL>`.
+3. On the **frontend** static site, set `VITE_API_URL=<backend URL>`.
+4. Check `<backend URL>/api/info`: it should report `gemini` and `local`.
+
+Never commit API keys. They belong only in `.env` (git-ignored) or in Render's environment settings.
+
+</details>
+
+## ◆ Experiments
+
+Run the pipeline over a grid of chunk sizes and top-k values on a fixed question set:
+
+```bash
+python -m experiments.run_experiment --dataset experiments/datasets/sample_rag_wikipedia.json --retrieval-only
+```
+
+Results (tables, CSVs and the exact config) are written to `experiments/results/`. See the [experiments guide](experiments/README.md) for writing datasets and reporting results.
+
+## ◆ Project structure
 
 ```text
-http://localhost:8000
+backend/       FastAPI app, RAG pipeline, providers, request limits
+frontend/      React + TypeScript single-page app
+experiments/   Grid runner, metrics, datasets
+tests/         pytest suite (no network calls)
 ```
 
-Health check:
+## ◆ Tests
 
-```text
-http://localhost:8000/health
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-### 6. Start the frontend
+## ◆ License
 
-Open a second terminal:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:5173
-```
-
-## 🧪 Retrieval Experiment
-
-The `experiments/` folder measures how **chunk size** and **top-k** affect
-retrieval (Hit@k, MRR) and answer quality (the four evaluation metrics) on a
-fixed question set, with confidence intervals and repeat runs.
-
-```powershell
-.\.venv\Scripts\python.exe -m experiments.run_experiment --dataset experiments/datasets/sample_rag_wikipedia.json --retrieval-only
-```
-
-See [experiments/README.md](experiments/README.md) for writing a dataset,
-running the full grid, and writing up the results.
-
-## ☁️ Deploying the Free Live Demo (Render + Gemini)
-
-The backend runs on Render's free plan with Gemini's free tier:
-
-1. Get a free Gemini key at https://aistudio.google.com/apikey.
-2. In the Render dashboard, open the **backend** service → **Environment**
-   and set:
-
-   | Key | Value |
-   |---|---|
-   | `LLM_PROVIDER` | `gemini` |
-   | `PAGE_FETCHER` | `local` |
-   | `GEMINI_API_KEY` | your key (keep it secret; never commit it) |
-   | `FRONTEND_ORIGIN` | the frontend's URL, e.g. `https://web-rag-evaluator-frontend.onrender.com` |
-
-3. Save. Render redeploys the service automatically.
-4. Check `https://<backend>.onrender.com/api/info`: it should report
-   `"llm_provider": "gemini"` and `"page_fetcher": "local"`.
-
-Optional: `GEMINI_CHAT_MODEL` (default `gemini-flash-lite-latest`, an alias
-Google keeps on its current fast model), `RATE_LIMIT_PER_HOUR` (default 30
-per visitor) and `DAILY_LIMIT` (default 500 for everyone together). Ingesting
-or asking costs 1, and each evaluation case costs 1.
-
-## ⚠️ Known Limitation
-
-This MVP currently supports **one webpage at a time**.
-
-Ingesting another URL replaces the existing `website_knowledge` Chroma collection and the current in-memory page state.
-
-This keeps the project intentionally small and easy to understand while leaving room for future improvements such as multi-document ingestion, persistent cloud vector storage, and more advanced retrieval strategies.
-
-## 🔮 Future Improvements
-
-Potential extensions include:
-
-* Support for multiple webpages and documents
-* Metadata-based filtering
-* Hybrid retrieval
-* Reranking retrieved chunks
-* Larger automated evaluation datasets
-* Evaluation history and analytics
-* Cloud-hosted vector storage
-* Production deployment with persistent storage
-
-## 🔐 Security
-
-API keys are kept on the **FastAPI backend** and are loaded from `.env`.
-
-The frontend communicates only with the backend API and does not directly expose the Context.dev or OpenAI credentials.
-
-In free mode the backend downloads pages itself. It accepts only public
-HTTP(S) pages, checks every redirect, refuses hosts that resolve to private or
-local addresses, and limits page size and download time.
-
-## 📌 Project Goal
-
-The goal of this project is to provide a **small, transparent, and explainable RAG system** where both the generated answer and the quality of the retrieval pipeline can be inspected and evaluated.
+[MIT](LICENSE) © 2026 Vijay PN
