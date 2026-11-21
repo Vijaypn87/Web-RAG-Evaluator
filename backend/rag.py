@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import threading
+import time
 from typing import Any, TypedDict
 from urllib.parse import urljoin, urlparse
 
@@ -56,6 +57,9 @@ LOCAL_FETCH_MAX_BYTES = 5_000_000
 LOCAL_FETCH_MAX_REDIRECTS = 5
 LOCAL_FETCH_USER_AGENT = "WebRAGEvaluator/0.2 (educational RAG project)"
 EMBEDDING_BATCH_SIZE = 100
+# Gemini's free tier allows 100 embedded texts per minute in total, so use
+# smaller batches that fit within one minute's allowance.
+GEMINI_EMBEDDING_BATCH_SIZE = 50
 # Reasoning models (such as gpt-5-mini) spend part of this budget on hidden
 # reasoning, so leave enough room for the visible answer as well.
 MAX_OUTPUT_TOKENS = 4_000
@@ -661,15 +665,52 @@ def _model_error(action: str, exc: OpenAIError) -> KnowledgeBaseError:
 
 
 # Embeddings
+def _retry_delay_seconds(exc: OpenAIError) -> float:
+    """Read how long the provider asked us to wait (e.g. "retry in 26.5s")."""
+    text = str(getattr(exc, "message", "") or exc)
+    match = re.search(r"retry in ([\d.]+)\s*s", text, re.IGNORECASE) or re.search(
+        r"retryDelay\W+(\d+(?:\.\d+)?)s", text
+    )
+    delay = float(match.group(1)) if match else 20.0
+    return min(max(delay, 1.0), 60.0)
+
+
+def _create_embeddings_with_wait(client: OpenAI, batch: list[str], model: str, budget: list[float]):
+    """Create embeddings, waiting out per-minute rate limits within a time budget.
+
+    Gemini's free tier counts every text in a batch as one request and allows
+    100 per minute, so loading a long page (or two pages close together) can
+    hit the limit. Waiting for the reset is better than failing the ingest.
+    """
+    while True:
+        try:
+            return client.embeddings.create(input=batch, model=model)
+        except RateLimitError as exc:
+            delay = _retry_delay_seconds(exc)
+            if delay > budget[0]:
+                raise
+            logger.info("Embedding rate limit reached; waiting %.0fs", delay)
+            budget[0] -= delay
+            _sleep(delay)
+
+
+_sleep = time.sleep  # replaced in tests
+
+
 def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
     """Embed text in small batches while preserving input order."""
     client = _openai_client()
     embeddings: list[list[float]] = []
+    batch_size = (
+        GEMINI_EMBEDDING_BATCH_SIZE if llm_provider() == "gemini" else EMBEDDING_BATCH_SIZE
+    )
+    # Total seconds this call may spend waiting for rate limits to reset.
+    budget = [float(os.getenv("RATE_LIMIT_MAX_WAIT_SECONDS", "150"))]
 
     try:
-        for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-            batch = texts[start : start + EMBEDDING_BATCH_SIZE]
-            response = client.embeddings.create(input=batch, model=model)
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            response = _create_embeddings_with_wait(client, batch, model, budget)
             # OpenAI numbers each embedding; Gemini's compatible endpoint
             # leaves the index empty and returns them in input order.
             if all(getattr(item, "index", None) is not None for item in response.data):
