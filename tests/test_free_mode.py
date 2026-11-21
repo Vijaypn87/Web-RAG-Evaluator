@@ -32,7 +32,7 @@ def test_provider_defaults_to_openai():
 
 
 def test_invalid_provider_is_rejected(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_PROVIDER", "not-a-provider")
     with pytest.raises(RAGInputError):
         rag.llm_provider()
 

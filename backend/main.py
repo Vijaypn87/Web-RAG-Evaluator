@@ -4,10 +4,11 @@ import os
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from backend.limits import limiter
 from backend.rag import (
     KnowledgeBaseError,
     MissingContextDevAPIKeyError,
@@ -18,6 +19,7 @@ from backend.rag import (
     create_knowledge_base,
     evaluate_case,
     fetch_website_markdown,
+    model_settings,
 )
 
 load_dotenv()
@@ -47,6 +49,15 @@ app.add_middleware(
 def health() -> dict[str, str]:
     """Return a lightweight readiness response."""
     return {"status": "ok"}
+
+
+@app.get("/api/info", tags=["system"])
+def info() -> dict[str, str]:
+    """Which page fetcher and models are active, so the UI can label them."""
+    try:
+        return model_settings()
+    except RAGInputError as exc:
+        raise _http_error(exc) from exc
 
 
 class IngestRequest(BaseModel):
@@ -140,8 +151,9 @@ def _http_error(error: Exception) -> HTTPException:
 
 
 @app.post("/api/ingest", response_model=IngestResponse, tags=["knowledge-base"])
-def ingest_website(payload: IngestRequest) -> IngestResponse:
+def ingest_website(payload: IngestRequest, request: Request) -> IngestResponse:
     """Ingest one webpage and keep it as the app's current knowledge source."""
+    limiter.check(request)
     try:
         website = fetch_website_markdown(str(payload.url))
         markdown = website["markdown"]
@@ -166,8 +178,9 @@ def ingest_website(payload: IngestRequest) -> IngestResponse:
 
 
 @app.post("/api/ask", response_model=AskResponse, tags=["question-answering"])
-def ask_question(payload: AskRequest) -> AskResponse:
+def ask_question(payload: AskRequest, request: Request) -> AskResponse:
     """Answer one question using only the current website knowledge base."""
+    limiter.check(request)
     try:
         result = answer_question(payload.question)
     except RAG_ERRORS as exc:
@@ -190,12 +203,14 @@ def evaluate_cases(
         list[EvaluationCaseRequest],
         Body(min_length=1, max_length=MAX_EVALUATION_CASES),
     ],
+    request: Request,
 ) -> list[EvaluationCaseResponse]:
     """Run the normal RAG pipeline and evaluator once for every case.
 
     A failure in one case is reported on that case's row instead of discarding
     the results of the others. If every case fails, the request fails.
     """
+    limiter.check(request, cost=len(cases))
     results: list[EvaluationCaseResponse] = []
     first_error: Exception | None = None
 

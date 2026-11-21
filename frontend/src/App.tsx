@@ -1,4 +1,4 @@
-import { FormEvent, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
 
 const tabs = ['Knowledge Base', 'Ask', 'Evals'] as const
 type Tab = (typeof tabs)[number]
@@ -93,6 +93,46 @@ function requestErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+type BackendInfo = {
+  llm_provider: string
+  chat_model: string
+  embedding_model: string
+  page_fetcher: string
+}
+
+type BackendStatus = 'connecting' | 'waking' | 'ready' | 'offline'
+
+function providerLabel(info: BackendInfo | null) {
+  if (!info) return 'Language model'
+  if (info.llm_provider === 'gemini') return 'Google Gemini'
+  if (info.llm_provider === 'ollama') return 'Ollama (local)'
+  return 'OpenAI'
+}
+
+function fetcherLabel(info: BackendInfo | null) {
+  if (!info) return 'Page extractor'
+  return info.page_fetcher === 'contextdev' ? 'Context.dev' : 'Trafilatura'
+}
+
+// Free hosting puts the backend to sleep when idle; the first request wakes
+// it, which can take up to a minute. Keep trying for a while before giving up.
+async function loadBackendInfo(signal: AbortSignal): Promise<BackendInfo> {
+  const deadline = Date.now() + 120_000
+  let lastError: unknown = null
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/info`, { signal })
+      if (response.ok) return (await response.json()) as BackendInfo
+      lastError = new Error(`HTTP ${response.status}`)
+    } catch (error) {
+      if (signal.aborted) throw error
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3_000))
+  }
+  throw lastError ?? new Error('Backend unavailable')
+}
+
 const Icon = ({ name }: { name: Tab }) => {
   if (name === 'Knowledge Base') {
     return <span className="tab-icon tab-icon--database" aria-hidden="true" />
@@ -105,7 +145,7 @@ const Icon = ({ name }: { name: Tab }) => {
   return <span className="tab-icon tab-icon--evals" aria-hidden="true">✓</span>
 }
 
-function KnowledgeBase() {
+function KnowledgeBase({ info }: { info: BackendInfo | null }) {
   const [url, setUrl] = useState('')
   const [result, setResult] = useState<IngestResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -136,8 +176,8 @@ function KnowledgeBase() {
         <span className="eyebrow">Step 01</span>
         <h2 id="knowledge-base-heading">Add a webpage</h2>
         <p>
-          Give the evaluator one public URL. Context.dev will turn its main page
-          content into clean, retrieval-ready Markdown.
+          Give the evaluator one public URL. {fetcherLabel(info)} will turn its
+          main page content into clean, retrieval-ready Markdown.
         </p>
       </div>
 
@@ -170,7 +210,7 @@ function KnowledgeBase() {
           <article className="result-card">
             <div className="result-card__topline">
               <span className="result-status"><i /> Ingestion completed</span>
-              <span className="result-source">Context.dev</span>
+              <span className="result-source">{fetcherLabel(info)}</span>
             </div>
             <h3>{result.title || 'Untitled webpage'}</h3>
             <a href={result.url} target="_blank" rel="noreferrer">{result.url}</a>
@@ -201,7 +241,7 @@ function KnowledgeBase() {
   )
 }
 
-function Ask() {
+function Ask({ info }: { info: BackendInfo | null }) {
   const [question, setQuestion] = useState('')
   const [result, setResult] = useState<AskResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -267,7 +307,9 @@ function Ask() {
           <article className="answer-card">
             <div className="answer-card__topline">
               <span className="result-status"><i /> Grounded answer</span>
-              <span className="result-source">OpenAI Responses API</span>
+              <span className="result-source">
+                {providerLabel(info)}{info ? ` · ${info.chat_model}` : ''}
+              </span>
             </div>
 
             <p className="answer-text">{result.answer}</p>
@@ -499,6 +541,38 @@ function Evals() {
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('Knowledge Base')
+  const [info, setInfo] = useState<BackendInfo | null>(null)
+  const [status, setStatus] = useState<BackendStatus>('connecting')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    // If the backend has not answered after 2 seconds, it is probably asleep.
+    const wakeTimer = setTimeout(() => {
+      setStatus((current) => (current === 'connecting' ? 'waking' : current))
+    }, 2_000)
+
+    loadBackendInfo(controller.signal)
+      .then((data) => {
+        setInfo(data)
+        setStatus('ready')
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setStatus('offline')
+      })
+      .finally(() => clearTimeout(wakeTimer))
+
+    return () => {
+      controller.abort()
+      clearTimeout(wakeTimer)
+    }
+  }, [])
+
+  const statusText = {
+    connecting: 'Connecting',
+    waking: 'Waking up',
+    ready: 'Live mode',
+    offline: 'Offline',
+  }[status]
 
   return (
     <main className="app-shell">
@@ -512,13 +586,27 @@ function App() {
           <p className="kicker">Tutorial project</p>
           <h1>Web RAG Evaluator</h1>
         </div>
-        <div className="status-pill"><span /> Live mode</div>
+        <div className={`status-pill status-pill--${status}`} role="status">
+          <span /> {statusText}
+        </div>
       </header>
 
       <p className="intro">
         A small, inspectable pipeline for turning a webpage into grounded answers
         you can actually evaluate.
       </p>
+
+      {status === 'waking' && (
+        <p className="wake-banner" role="status">
+          Waking up the server… This free demo sleeps when nobody is using it,
+          so the first visit can take up to a minute.
+        </p>
+      )}
+      {status === 'offline' && (
+        <p className="error-message wake-banner--offline" role="alert">
+          The backend is not responding right now. Please refresh in a minute.
+        </p>
+      )}
 
       <nav className="tabs" aria-label="Evaluator sections">
         {tabs.map((tab) => (
@@ -537,8 +625,8 @@ function App() {
       </nav>
 
       <div role="tabpanel">
-        {activeTab === 'Knowledge Base' && <KnowledgeBase />}
-        {activeTab === 'Ask' && <Ask />}
+        {activeTab === 'Knowledge Base' && <KnowledgeBase info={info} />}
+        {activeTab === 'Ask' && <Ask info={info} />}
         {activeTab === 'Evals' && <Evals />}
       </div>
 
@@ -549,9 +637,9 @@ function App() {
         <i />
         <span>Chroma</span>
         <i />
-        <span>OpenAI</span>
+        <span>{providerLabel(info)}</span>
         <i />
-        <span>Context.dev</span>
+        <span>{fetcherLabel(info)}</span>
       </footer>
     </main>
   )

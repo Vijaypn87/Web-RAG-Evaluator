@@ -131,6 +131,42 @@ h1 {
   box-shadow: 0 0 12px rgba(94,231,160,.65);
 }
 
+.status-pill--connecting span,
+.status-pill--waking span {
+  background: #f5c15b;
+  box-shadow: 0 0 12px rgba(245,193,91,.65);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.status-pill--offline span {
+  background: var(--danger);
+  box-shadow: 0 0 12px rgba(255,143,143,.6);
+}
+
+@keyframes pulse {
+  50% { opacity: .35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pill--connecting span,
+  .status-pill--waking span { animation: none; }
+}
+
+.wake-banner {
+  margin: -14px 0 26px;
+  padding: 11px 13px;
+  border-left: 2px solid #f5c15b;
+  border-radius: 5px;
+  color: #f7dca6;
+  background: rgba(245,193,91,.07);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+
+.wake-banner--offline {
+  margin: -14px 0 26px;
+}
+
 .intro {
   max-width: 720px;
   margin: 24px 0 34px 66px;

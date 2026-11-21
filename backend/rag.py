@@ -15,7 +15,13 @@ import trafilatura
 import urllib3
 from chromadb.errors import ChromaError, NotFoundError
 from context.dev import ContextDev, ContextDevError
-from openai import APIConnectionError, OpenAI, OpenAIError
+from openai import (
+    APIConnectionError,
+    AuthenticationError,
+    OpenAI,
+    OpenAIError,
+    RateLimitError,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -26,13 +32,22 @@ TARGET_CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 DEFAULT_TOP_K = 4
 
-# Free, local alternative to OpenAI (https://ollama.com). Ollama serves an
-# OpenAI-compatible API, so the same client library talks to both.
-LLM_PROVIDERS = {"openai", "ollama"}
+# Model providers. Ollama (free, local: https://ollama.com) and Google Gemini
+# (free tier, hosted: https://aistudio.google.com) both serve OpenAI-compatible
+# APIs, so one client library talks to all three.
+LLM_PROVIDERS = {"openai", "ollama", "gemini"}
+# Providers that only support Chat Completions (not the Responses API).
+CHAT_COMPLETIONS_PROVIDERS = {"ollama", "gemini"}
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 OLLAMA_DEFAULT_CHAT_MODEL = "llama3.2"
 OLLAMA_DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 OLLAMA_TIMEOUT_SECONDS = 300
+GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# An alias Google keeps pointed at its current fast, free-tier model, so the
+# demo keeps working when older versions are retired.
+GEMINI_DEFAULT_CHAT_MODEL = "gemini-flash-lite-latest"
+GEMINI_DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+GEMINI_TIMEOUT_SECONDS = 120
 
 # Free, local alternative to Context.dev for turning a webpage into Markdown.
 PAGE_FETCHERS = {"contextdev", "local"}
@@ -540,7 +555,7 @@ def _configured_model(variable: str, default: str) -> str:
 
 
 def llm_provider() -> str:
-    """Return the configured model provider: "openai" (default) or "ollama"."""
+    """Return the configured model provider: "openai" (default), "ollama" or "gemini"."""
     provider = os.getenv("LLM_PROVIDER", "openai").strip().lower() or "openai"
     if provider not in LLM_PROVIDERS:
         raise RAGInputError(
@@ -550,25 +565,34 @@ def llm_provider() -> str:
 
 
 def _provider_label() -> str:
-    return "Ollama" if llm_provider() == "ollama" else "OpenAI"
+    return {"ollama": "Ollama", "gemini": "Gemini"}.get(llm_provider(), "OpenAI")
+
+
+def _uses_chat_completions() -> bool:
+    return llm_provider() in CHAT_COMPLETIONS_PROVIDERS
+
+
+# Environment variable prefix and default models for each provider.
+_PROVIDER_MODELS = {
+    "openai": ("OPENAI", DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL),
+    "ollama": ("OLLAMA", OLLAMA_DEFAULT_CHAT_MODEL, OLLAMA_DEFAULT_EMBEDDING_MODEL),
+    "gemini": ("GEMINI", GEMINI_DEFAULT_CHAT_MODEL, GEMINI_DEFAULT_EMBEDDING_MODEL),
+}
 
 
 def _embedding_model() -> str:
-    if llm_provider() == "ollama":
-        return _configured_model("OLLAMA_EMBEDDING_MODEL", OLLAMA_DEFAULT_EMBEDDING_MODEL)
-    return _configured_model("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+    prefix, _, default = _PROVIDER_MODELS[llm_provider()]
+    return _configured_model(f"{prefix}_EMBEDDING_MODEL", default)
 
 
 def _chat_model() -> str:
-    if llm_provider() == "ollama":
-        return _configured_model("OLLAMA_CHAT_MODEL", OLLAMA_DEFAULT_CHAT_MODEL)
-    return _configured_model("OPENAI_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+    prefix, default, _ = _PROVIDER_MODELS[llm_provider()]
+    return _configured_model(f"{prefix}_CHAT_MODEL", default)
 
 
 def _evaluator_model() -> str:
-    if llm_provider() == "ollama":
-        return _configured_model("OLLAMA_EVALUATOR_MODEL", _chat_model())
-    return _configured_model("OPENAI_EVALUATOR_MODEL", _chat_model())
+    prefix, _, _ = _PROVIDER_MODELS[llm_provider()]
+    return _configured_model(f"{prefix}_EVALUATOR_MODEL", _chat_model())
 
 
 def model_settings() -> dict[str, str]:
@@ -592,6 +616,20 @@ def _openai_client() -> OpenAI:
             timeout=OLLAMA_TIMEOUT_SECONDS,
         )
 
+    if llm_provider() == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise MissingOpenAIAPIKeyError(
+                "GEMINI_API_KEY is not configured on the backend."
+            )
+        return OpenAI(
+            base_url=os.getenv("GEMINI_BASE_URL", GEMINI_DEFAULT_BASE_URL).strip()
+            or GEMINI_DEFAULT_BASE_URL,
+            api_key=api_key,
+            timeout=GEMINI_TIMEOUT_SECONDS,
+            max_retries=2,
+        )
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise MissingOpenAIAPIKeyError(
@@ -613,6 +651,12 @@ def _model_error(action: str, exc: OpenAIError) -> KnowledgeBaseError:
         return KnowledgeBaseError(
             "The Ollama model is not installed. Run `ollama pull <model>` first."
         )
+    if isinstance(exc, RateLimitError):
+        return KnowledgeBaseError(
+            f"{label} is busy or its free usage limit was reached. Try again in a minute."
+        )
+    if isinstance(exc, AuthenticationError) or getattr(exc, "status_code", None) in {401, 403}:
+        return KnowledgeBaseError(f"The {label} API key was rejected by {label}.")
     return KnowledgeBaseError(f"{label} could not {action}.")
 
 
@@ -626,7 +670,12 @@ def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
         for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
             batch = texts[start : start + EMBEDDING_BATCH_SIZE]
             response = client.embeddings.create(input=batch, model=model)
-            ordered_data = sorted(response.data, key=lambda item: item.index)
+            # OpenAI numbers each embedding; Gemini's compatible endpoint
+            # leaves the index empty and returns them in input order.
+            if all(getattr(item, "index", None) is not None for item in response.data):
+                ordered_data = sorted(response.data, key=lambda item: item.index)
+            else:
+                ordered_data = list(response.data)
             embeddings.extend(item.embedding for item in ordered_data)
     except OpenAIError as exc:
         raise _model_error("create embeddings", exc) from exc
@@ -826,26 +875,42 @@ def _validated_citation_labels(
 
 
 # Model calls
-# Ollama only supports the Chat Completions API, so it uses that path; OpenAI
-# keeps using the Responses API. temperature/seed make local runs repeatable.
-def _evaluator_json_schema() -> dict[str, Any]:
-    """A flat JSON schema (no $refs) that local models can follow reliably."""
-    metric = {
+# Ollama and Gemini only support the Chat Completions API, so they use that
+# path; OpenAI keeps using the Responses API. temperature 0 (and a seed where
+# supported) makes runs as repeatable as the provider allows.
+def _evaluator_json_schema(*, strict: bool = True) -> dict[str, Any]:
+    """A flat JSON schema (no $refs) that smaller models can follow reliably.
+
+    strict=False leaves out keywords (additionalProperties, minimum/maximum)
+    that Gemini's OpenAI-compatible endpoint may reject; Pydantic still
+    validates the result either way.
+    """
+    score: dict[str, Any] = {"type": "number"}
+    if strict:
+        score.update({"minimum": 0, "maximum": 1})
+    metric: dict[str, Any] = {
         "type": "object",
-        "properties": {
-            "score": {"type": "number", "minimum": 0, "maximum": 1},
-            "explanation": {"type": "string"},
-        },
+        "properties": {"score": score, "explanation": {"type": "string"}},
         "required": ["score", "explanation"],
-        "additionalProperties": False,
     }
     names = ("retrieval_relevance", "groundedness", "answer_correctness")
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": {name: metric for name in names},
         "required": list(names),
-        "additionalProperties": False,
     }
+    if strict:
+        metric["additionalProperties"] = False
+        schema["additionalProperties"] = False
+    return schema
+
+
+def _chat_options() -> dict[str, Any]:
+    """Provider-specific Chat Completions options."""
+    options: dict[str, Any] = {"temperature": 0, "max_tokens": MAX_OUTPUT_TOKENS}
+    if llm_provider() == "ollama":
+        options["seed"] = 0
+    return options
 
 
 def _generate_answer(response_input: str) -> str:
@@ -853,16 +918,14 @@ def _generate_answer(response_input: str) -> str:
     label = _provider_label()
     client = _openai_client()
     try:
-        if llm_provider() == "ollama":
+        if _uses_chat_completions():
             completion = client.chat.completions.create(
                 model=_chat_model(),
                 messages=[
                     {"role": "system", "content": ANSWER_INSTRUCTIONS},
                     {"role": "user", "content": response_input},
                 ],
-                temperature=0,
-                seed=0,
-                max_tokens=MAX_OUTPUT_TOKENS,
+                **_chat_options(),
             )
             text = (completion.choices[0].message.content or "").strip()
             if not text:
@@ -895,7 +958,7 @@ def _generate_evaluation(evaluator_input: str) -> EvaluatorOutput:
     label = _provider_label()
     client = _openai_client()
     try:
-        if llm_provider() == "ollama":
+        if _uses_chat_completions():
             completion = client.chat.completions.create(
                 model=_evaluator_model(),
                 messages=[
@@ -906,14 +969,16 @@ def _generate_evaluation(evaluator_input: str) -> EvaluatorOutput:
                     "type": "json_schema",
                     "json_schema": {
                         "name": "rag_evaluation",
-                        "schema": _evaluator_json_schema(),
+                        "schema": _evaluator_json_schema(
+                            strict=llm_provider() != "gemini"
+                        ),
                     },
                 },
-                temperature=0,
-                seed=0,
-                max_tokens=MAX_OUTPUT_TOKENS,
+                **_chat_options(),
             )
             content = completion.choices[0].message.content or ""
+            # Some models wrap JSON in a ```json fence despite the schema.
+            content = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", content)
             try:
                 return EvaluatorOutput.model_validate(json.loads(content))
             except (json.JSONDecodeError, ValidationError) as exc:
