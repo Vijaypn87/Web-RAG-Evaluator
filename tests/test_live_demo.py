@@ -176,3 +176,64 @@ def test_api_returns_429_when_limited(monkeypatch):
     limited = client.post("/api/ask", json={"question": "q"})
     assert limited.status_code == 429
     assert "hourly limit" in limited.json()["detail"]
+
+
+# Gemini free-tier embedding limit (100 texts per minute)
+class FakeEmbeddings:
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.batches = []
+
+    def create(self, input, model):
+        self.batches.append(len(input))
+        if self.failures:
+            raise self.failures.pop(0)
+        data = [SimpleNamespace(index=None, embedding=[float(i)]) for i in range(len(input))]
+        return SimpleNamespace(data=data)
+
+
+def _rate_limit(message):
+    request = httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/openai/embeddings")
+    return RateLimitError(message, response=httpx.Response(429, request=request), body=None)
+
+
+def _fake_embedding_client(monkeypatch, failures):
+    embeddings = FakeEmbeddings(failures)
+    monkeypatch.setattr(rag, "_openai_client", lambda: SimpleNamespace(embeddings=embeddings))
+    waits = []
+    monkeypatch.setattr(rag, "_sleep", waits.append)
+    return embeddings, waits
+
+
+def test_gemini_embeddings_use_small_batches(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    embeddings, _ = _fake_embedding_client(monkeypatch, [])
+    vectors = rag._embed_texts([f"t{i}" for i in range(120)], "gemini-embedding-001")
+    assert len(vectors) == 120
+    assert embeddings.batches == [50, 50, 20]
+
+
+def test_embedding_waits_for_rate_limit_then_continues(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    error = _rate_limit("Quota exceeded for embed_content_free_tier_requests. Please retry in 26.5s.")
+    embeddings, waits = _fake_embedding_client(monkeypatch, [error])
+    vectors = rag._embed_texts(["a", "b"], "gemini-embedding-001")
+    assert len(vectors) == 2
+    assert waits == [26.5]
+    assert embeddings.batches == [2, 2]
+
+
+def test_embedding_gives_up_when_wait_budget_is_used(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("RATE_LIMIT_MAX_WAIT_SECONDS", "30")
+    errors = [_rate_limit("Please retry in 20s.") for _ in range(3)]
+    _, waits = _fake_embedding_client(monkeypatch, errors)
+    with pytest.raises(KnowledgeBaseError, match="free usage limit"):
+        rag._embed_texts(["a"], "gemini-embedding-001")
+    assert waits == [20.0]
+
+
+def test_retry_delay_parsing():
+    assert rag._retry_delay_seconds(_rate_limit("retryDelay': '41s'")) == 41.0
+    assert rag._retry_delay_seconds(_rate_limit("no hint here")) == 20.0
+    assert rag._retry_delay_seconds(_rate_limit("Please retry in 500s")) == 60.0
