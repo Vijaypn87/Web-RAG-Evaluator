@@ -89,6 +89,13 @@ web-rag-evaluator/
 │       ├── App.tsx      # React application interface
 │       └── index.css    # Application styling
 │
+├── experiments/
+│   ├── run_experiment.py  # Chunk size × top-k grid runner
+│   ├── metrics.py         # Hit@k, MRR, summaries
+│   └── datasets/          # Question sets with evidence phrases
+│
+├── tests/               # pytest suite (no external API calls)
+│
 ├── .env.example
 ├── .gitignore
 ├── README.md
@@ -226,6 +233,19 @@ Open:
 ```text
 http://localhost:5173
 ```
+
+## 🧪 Retrieval Experiment
+
+The `experiments/` folder measures how **chunk size** and **top-k** affect
+retrieval (Hit@k, MRR) and answer quality (the four evaluation metrics) on a
+fixed question set, with confidence intervals and repeat runs.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_experiment --dataset experiments/datasets/sample_rag_wikipedia.json --retrieval-only
+```
+
+See [experiments/README.md](experiments/README.md) for writing a dataset,
+running the full grid, and writing up the results.
 
 ## ⚠️ Known Limitation
 

@@ -9,3 +9,7 @@ frontend/dist/
 chroma_data/
 .DS_Store
 
+
+# Retrieval experiments
+experiments/.cache/
+experiments/.chroma/

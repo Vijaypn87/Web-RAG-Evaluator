@@ -20,6 +20,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_CHAT_MODEL = "gpt-5-mini"
 TARGET_CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
+DEFAULT_TOP_K = 4
 EMBEDDING_BATCH_SIZE = 100
 # Reasoning models (such as gpt-5-mini) spend part of this budget on hidden
 # reasoning, so leave enough room for the visible answer as well.
@@ -300,9 +301,11 @@ def _semantic_blocks(markdown: str) -> list[str]:
     return semantic_blocks
 
 
-def _overlap_tail(text: str) -> str:
+def _overlap_tail(text: str, overlap: int = CHUNK_OVERLAP) -> str:
     """Return a short readable tail to carry into the next chunk."""
-    tail = text[-CHUNK_OVERLAP:]
+    if overlap <= 0:
+        return ""
+    tail = text[-overlap:]
     for boundary in ("\n\n", ". ", " "):
         boundary_index = tail.find(boundary)
         if 0 <= boundary_index < len(tail) - 20:
@@ -310,14 +313,23 @@ def _overlap_tail(text: str) -> str:
     return tail.strip()
 
 
-def chunk_markdown(markdown: str) -> list[Chunk]:
-    """Split Markdown into roughly 800-character, slightly overlapping chunks."""
+def chunk_markdown(
+    markdown: str,
+    chunk_size: int = TARGET_CHUNK_SIZE,
+    overlap: int = CHUNK_OVERLAP,
+) -> list[Chunk]:
+    """Split Markdown into roughly chunk_size-character, slightly overlapping chunks."""
+    if chunk_size < 100:
+        raise RAGInputError("chunk_size must be at least 100 characters.")
+    if not 0 <= overlap < chunk_size // 2:
+        raise RAGInputError("overlap must be between 0 and half of chunk_size.")
+
     normalized = markdown.replace("\r\n", "\n").strip()
     if not normalized:
         return []
 
     blocks: list[str] = []
-    block_limit = TARGET_CHUNK_SIZE - CHUNK_OVERLAP
+    block_limit = chunk_size - overlap
     for block in _semantic_blocks(normalized):
         blocks.extend(_split_long_block(block, block_limit))
 
@@ -326,15 +338,15 @@ def chunk_markdown(markdown: str) -> list[Chunk]:
 
     for block in blocks:
         candidate = f"{current}\n\n{block}".strip() if current else block
-        if not current or len(candidate) <= TARGET_CHUNK_SIZE:
+        if not current or len(candidate) <= chunk_size:
             current = candidate
             continue
 
         if current.strip():
             chunk_texts.append(current.strip())
 
-        overlap = _overlap_tail(current)
-        current = f"{overlap}\n\n{block}".strip() if overlap else block
+        tail = _overlap_tail(current, overlap)
+        current = f"{tail}\n\n{block}".strip() if tail else block
 
     if current.strip():
         chunk_texts.append(current.strip())
@@ -409,30 +421,46 @@ def _chroma_client() -> chromadb.ClientAPI:
         raise KnowledgeBaseError("Chroma could not open its local store.") from exc
 
 
-def create_knowledge_base(markdown: str, source_url: str) -> list[Chunk]:
-    """Chunk, embed, and persist one website in the local Chroma collection."""
-    chunks = chunk_markdown(markdown)
+def create_knowledge_base(
+    markdown: str,
+    source_url: str,
+    *,
+    collection_name: str = COLLECTION_NAME,
+    chunk_size: int = TARGET_CHUNK_SIZE,
+    overlap: int = CHUNK_OVERLAP,
+    embedding_model: str | None = None,
+) -> list[Chunk]:
+    """Chunk, embed, and persist one website in a Chroma collection.
+
+    The keyword arguments exist for experiments; the web app uses the defaults.
+    """
+    chunks = chunk_markdown(markdown, chunk_size=chunk_size, overlap=overlap)
     if not chunks:
         raise KnowledgeBaseError("The webpage did not produce any searchable chunks.")
 
     for chunk in chunks:
         chunk["source_url"] = source_url
 
-    model = _embedding_model()
+    model = embedding_model or _embedding_model()
     embeddings = _embed_texts([chunk["text"] for chunk in chunks], model)
     client = _chroma_client()
 
     try:
         with _knowledge_base_lock:
             try:
-                client.delete_collection(name=COLLECTION_NAME)
+                client.delete_collection(name=collection_name)
             except NotFoundError:
                 pass
 
             collection = client.create_collection(
-                name=COLLECTION_NAME,
+                name=collection_name,
                 configuration={"hnsw": {"space": "cosine"}},
-                metadata={"source_url": source_url, "embedding_model": model},
+                metadata={
+                    "source_url": source_url,
+                    "embedding_model": model,
+                    "chunk_size": chunk_size,
+                    "overlap": overlap,
+                },
                 embedding_function=None,
             )
             collection.add(
@@ -457,7 +485,12 @@ def create_knowledge_base(markdown: str, source_url: str) -> list[Chunk]:
 
 
 # Retrieval
-def retrieve_chunks(question: str, top_k: int = 4) -> list[RetrievedChunk]:
+def retrieve_chunks(
+    question: str,
+    top_k: int = DEFAULT_TOP_K,
+    *,
+    collection_name: str = COLLECTION_NAME,
+) -> list[RetrievedChunk]:
     """Return the most similar stored chunks for a natural-language question."""
     if not question.strip():
         raise RAGInputError("Question cannot be empty.")
@@ -474,7 +507,7 @@ def retrieve_chunks(question: str, top_k: int = 4) -> list[RetrievedChunk]:
     with _knowledge_base_lock:
         try:
             collection = client.get_collection(
-                name=COLLECTION_NAME,
+                name=collection_name,
                 embedding_function=None,
             )
         except NotFoundError as exc:
@@ -487,7 +520,7 @@ def retrieve_chunks(question: str, top_k: int = 4) -> list[RetrievedChunk]:
     try:
         with _knowledge_base_lock:
             collection = client.get_collection(
-                name=COLLECTION_NAME,
+                name=collection_name,
                 embedding_function=None,
             )
             chunk_count = collection.count()
@@ -573,9 +606,18 @@ def _format_context(chunks: list[LabeledRetrievedChunk]) -> str:
     )
 
 
-def answer_question(question: str) -> AnswerResult:
+def answer_question(
+    question: str,
+    *,
+    top_k: int = DEFAULT_TOP_K,
+    collection_name: str = COLLECTION_NAME,
+) -> AnswerResult:
     """Retrieve evidence and answer one question with validated citations."""
-    retrieved = retrieve_chunks(question, top_k=4)
+    retrieved = retrieve_chunks(
+        question,
+        top_k=top_k,
+        collection_name=collection_name,
+    )
     labeled_chunks: list[LabeledRetrievedChunk] = [
         {
             **chunk,
@@ -673,7 +715,13 @@ def _bounded_score(value: float) -> float:
     return round(max(0.0, min(1.0, float(value))), 3)
 
 
-def evaluate_case(question: str, expected_answer: str) -> EvaluationResult:
+def evaluate_case(
+    question: str,
+    expected_answer: str,
+    *,
+    top_k: int = DEFAULT_TOP_K,
+    collection_name: str = COLLECTION_NAME,
+) -> EvaluationResult:
     """Run the RAG pipeline and score one question/expected-answer pair."""
     clean_question = question.strip()
     clean_expected_answer = expected_answer.strip()
@@ -682,7 +730,11 @@ def evaluate_case(question: str, expected_answer: str) -> EvaluationResult:
     if not clean_expected_answer:
         raise RAGInputError("Expected answer cannot be empty.")
 
-    answer_result = answer_question(clean_question)
+    answer_result = answer_question(
+        clean_question,
+        top_k=top_k,
+        collection_name=collection_name,
+    )
     retrieved_context = (
         _format_context(answer_result["retrieved_chunks"])
         or "No chunks were retrieved."

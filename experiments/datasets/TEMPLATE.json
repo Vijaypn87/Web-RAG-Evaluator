@@ -1,0 +1,17 @@
+{
+  "name": "my_dataset",
+  "description": "Copy this file, then write 30-50 cases. Use several pages if you can.",
+  "sources": [
+    {
+      "url": "https://example.com/some-public-article",
+      "cases": [
+        {
+          "id": "q01",
+          "question": "A question the page answers.",
+          "expected_answer": "The answer, written in your own words.",
+          "evidence": ["a short exact phrase copied from the page that contains the answer"]
+        }
+      ]
+    }
+  ]
+}
