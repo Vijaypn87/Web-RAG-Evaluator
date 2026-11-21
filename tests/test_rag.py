@@ -155,3 +155,25 @@ def test_chunk_markdown_covers_all_content():
 def test_split_long_block_without_spaces():
     pieces = rag._split_long_block("x" * 2_000, 700)
     assert [len(p) for p in pieces] == [700, 700, 600]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        INSUFFICIENT_INFORMATION_ANSWER,
+        "The source passages do not contain enough information to answer this question.",
+        "The provided passages don't contain sufficient information about that.",
+        "There is not enough information in the source to answer.",
+    ],
+)
+def test_reworded_refusals_score_like_the_exact_sentence(answer):
+    assert _citation_validity(_result(answer, [])) == 1.0
+
+
+def test_long_answers_mentioning_information_are_not_refusals():
+    answer = (
+        "The page explains retrieval in detail [S1]. " * 8
+        + "It does not contain enough information about pricing."
+    )
+    assert _citation_validity(_result(answer, ["[S1]"] * 8)) == 1.0
+    assert _citation_validity(_result(answer, [])) == 0.0
