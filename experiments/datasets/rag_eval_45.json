@@ -1,0 +1,415 @@
+{
+  "name": "rag_eval_45",
+  "description": "45 questions over three public pages (two encyclopedia articles and one technical documentation page). Types: fact (single detail), multi-part (several details) and unanswerable (the page does not contain the answer). Drafted with AI assistance; every evidence phrase was checked against the extracted page text.",
+  "sources": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Retrieval-augmented_generation",
+      "cases": [
+        {
+          "id": "rag-01",
+          "question": "In what year was retrieval-augmented generation first proposed?",
+          "expected_answer": "It was first proposed in 2020.",
+          "evidence": [
+            "first proposed in 2020",
+            "introduced in a 2020 paper"
+          ],
+          "type": "fact"
+        },
+        {
+          "id": "rag-02",
+          "question": "What incorrect information did Google's Bard give in its first demonstration, and what did it cost Google?",
+          "expected_answer": "Bard gave incorrect information about the James Webb Space Telescope, contributing to a $100 billion decline in Google's stock value.",
+          "evidence": [
+            "$100 billion decline"
+          ],
+          "type": "multi-part"
+        },
+        {
+          "id": "rag-03",
+          "question": "What is the technique of adding relevant context to the user's input called?",
+          "expected_answer": "Prompt stuffing.",
+          "evidence": [
+            "prompt stuffing"
+          ],
+          "type": "fact"
+        },
+        {
+          "id": "rag-04",
+          "question": "Where are the embeddings stored so that documents can be retrieved?",
+          "expected_answer": "In a vector database.",
+          "evidence": [
+            "stored in a vector database"
+          ],
+          "type": "fact"
+        },
+        {
+          "id": "rag-05",
+          "question": "How do sparse vectors differ from dense vectors?",
+          "expected_answer": "Sparse vectors encode the identity of a word, are dictionary-length and mostly zeros; dense vectors encode meaning, are more compact and contain fewer zeros.",
+          "evidence": [
+            "Sparse vectors, which encode the identity of a word"
+          ],
+          "type": "multi-part"
+        },
+        {
+          "id": "rag-06",
+          "question": "What task can be used to pre-train the retriever?",
+          "expected_answer": "The Inverse Cloze Task (ICT), which has the model predict masked text within documents.",
+          "evidence": [
+            "Inverse Cloze Task"
+          ],
+          "type": "fact"
+        },
+        {
+          "id": "rag-07",
+          "question": "What is the more reproducible version of Retro called?",
+          "expected_answer": "Retro++, which includes in-context RAG.",
+          "evidence": [
+            "is called Retro++"
+          ],
+          "type": "fact"
+        },
+        {
+          "id": "rag-08",
+          "question": "What trade-off does chunk size involve?",
+          "expected_answer": "A trade-off between focused retrieval and contextual completeness: smaller chunks isolate relevant information but can omit context, while larger chunks keep context but may include irrelevant material and use more of the input budget.",
+          "evidence": [
+            "trade-off between focused retrieval and contextual completeness"
+          ],
+          "type": "multi-part"
+        },
+        {
+          "id": "rag-09",
+          "question": "How does hybrid search help when vector search misses key facts?",
+          "expected_answer": "It also runs a traditional full-text search and combines those results with the vector-search chunks before feeding them to the language model.",
+          "evidence": [
+            "traditional text search"
+          ],
+          "type": "multi-part"
+        },
+        {
+          "id": "rag-10",
+          "question": "Does RAG prevent hallucinations?",
+          "expected_answer": "No. RAG does not prevent hallucinations; the model can still hallucinate around the source material.",
+          "evidence": [
+            "RAG does not prevent hallucinations"
+          ],
+          "type": "fact"
+        },
+        {
+          "id": "rag-11",
+          "type": "fact",
+          "question": "What did the 2020 paper that introduced RAG combine?",
+          "expected_answer": "A parametric language model with a non-parametric external memory accessed through retrieval at inference time.",
+          "evidence": [
+            "non-parametric external memory"
+          ]
+        },
+        {
+          "id": "rag-12",
+          "type": "multi-part",
+          "question": "What are the common approaches to text chunking?",
+          "expected_answer": "Fixed-length, recursive and semantic chunking.",
+          "evidence": [
+            "fixed-length, recursive and semantic chunking"
+          ]
+        },
+        {
+          "id": "rag-13",
+          "type": "multi-part",
+          "question": "How do dot products and approximate nearest neighbor search each improve vector retrieval?",
+          "expected_answer": "Dot products enhance similarity scoring, while approximate nearest neighbor (ANN) searches improve retrieval efficiency over K-nearest neighbors (KNN) searches.",
+          "evidence": [
+            "Dot products enhance similarity scoring"
+          ]
+        },
+        {
+          "id": "rag-14",
+          "type": "unanswerable",
+          "question": "How much does it cost per month to run a RAG system in production?",
+          "expected_answer": "The source does not contain enough information to answer this question.",
+          "evidence": []
+        },
+        {
+          "id": "rag-15",
+          "type": "unanswerable",
+          "question": "Which company released the first commercial RAG chatbot?",
+          "expected_answer": "The source does not contain enough information to answer this question.",
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Vector_database",
+      "cases": [
+        {
+          "id": "vdb-01",
+          "type": "fact",
+          "question": "What other names are used for a vector database?",
+          "expected_answer": "A vector store or a vector search engine.",
+          "evidence": [
+            "vector store or vector search engine"
+          ]
+        },
+        {
+          "id": "vdb-02",
+          "type": "fact",
+          "question": "What kind of algorithms do vector databases typically implement?",
+          "expected_answer": "Approximate nearest neighbor algorithms.",
+          "evidence": [
+            "typically implement approximate nearest neighbor"
+          ]
+        },
+        {
+          "id": "vdb-03",
+          "type": "fact",
+          "question": "How many dimensions can vector embeddings have?",
+          "expected_answer": "From a few hundred to tens of thousands, depending on how complex the data is.",
+          "evidence": [
+            "from a few hundred to tens of thousands"
+          ]
+        },
+        {
+          "id": "vdb-04",
+          "type": "fact",
+          "question": "What is the goal when computing feature vectors for data items?",
+          "expected_answer": "Semantically similar data items should receive feature vectors that are close to each other.",
+          "evidence": [
+            "semantically similar data items receive feature vectors close to each other"
+          ]
+        },
+        {
+          "id": "vdb-05",
+          "type": "multi-part",
+          "question": "What are the common techniques for similarity search on high-dimensional vectors?",
+          "expected_answer": "HNSW graphs, locality-sensitive hashing (LSH) and sketching, product quantization (PQ), and inverted files.",
+          "evidence": [
+            "Hierarchical Navigable Small World (HNSW) graphs"
+          ]
+        },
+        {
+          "id": "vdb-06",
+          "type": "fact",
+          "question": "Which implementations performed best in recent vector search benchmarks?",
+          "expected_answer": "HNSW-based implementations.",
+          "evidence": [
+            "HNSW-based implementations have been among the best performers"
+          ]
+        },
+        {
+          "id": "vdb-07",
+          "type": "multi-part",
+          "question": "Which conferences have hosted competitions on vector search?",
+          "expected_answer": "SISAP (the International Conference on Similarity Search and Applications) and NeurIPS.",
+          "evidence": [
+            "International Conference on Similarity Search and Applications (SISAP)"
+          ]
+        },
+        {
+          "id": "vdb-08",
+          "type": "multi-part",
+          "question": "What can vector retrieval be combined with to support hybrid retrieval?",
+          "expected_answer": "Metadata filtering, lexical or sparse retrieval, graph-based retrieval, and multimodal retrieval.",
+          "evidence": [
+            "combined with metadata filtering"
+          ]
+        },
+        {
+          "id": "vdb-09",
+          "type": "fact",
+          "question": "How is the retrieval component of a RAG system most often implemented?",
+          "expected_answer": "As a vector database.",
+          "evidence": [
+            "most often implemented as a vector database"
+          ]
+        },
+        {
+          "id": "vdb-10",
+          "type": "fact",
+          "question": "In RAG, what happens to the documents retrieved from the vector database?",
+          "expected_answer": "They are added into the context window of the large language model, which then writes a response.",
+          "evidence": [
+            "added into the context window"
+          ]
+        },
+        {
+          "id": "vdb-11",
+          "type": "multi-part",
+          "question": "How does searching a vector database differ from looking up records in a traditional database?",
+          "expected_answer": "Vector databases find records that are semantically similar to the input, while traditional databases mainly look up records by exact match.",
+          "evidence": [
+            "primarily look up records by exact match"
+          ]
+        },
+        {
+          "id": "vdb-12",
+          "type": "unanswerable",
+          "question": "What is the query latency of HNSW on a billion vectors?",
+          "expected_answer": "The source does not contain enough information to answer this question.",
+          "evidence": []
+        },
+        {
+          "id": "vdb-13",
+          "type": "unanswerable",
+          "question": "Who invented the first vector database?",
+          "expected_answer": "The source does not contain enough information to answer this question.",
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "url": "https://docs.python.org/3/tutorial/datastructures.html",
+      "cases": [
+        {
+          "id": "py-01",
+          "type": "fact",
+          "question": "What does list.append() do?",
+          "expected_answer": "It adds an item to the end of the list.",
+          "evidence": [
+            "add an item to the end of the list"
+          ]
+        },
+        {
+          "id": "py-02",
+          "type": "fact",
+          "question": "What exception does list.remove() raise when the value is not in the list?",
+          "expected_answer": "A ValueError.",
+          "evidence": [
+            "raises a ValueError if there is no such item"
+          ]
+        },
+        {
+          "id": "py-03",
+          "type": "fact",
+          "question": "What does a.pop() return when no index is given?",
+          "expected_answer": "It removes and returns the last item in the list.",
+          "evidence": [
+            "removes and returns the last item in the list"
+          ]
+        },
+        {
+          "id": "py-04",
+          "type": "fact",
+          "question": "What do list methods like insert, remove and sort return?",
+          "expected_answer": "Nothing useful: they modify the list in place and return the default None.",
+          "evidence": [
+            "they return the default"
+          ]
+        },
+        {
+          "id": "py-05",
+          "type": "multi-part",
+          "question": "Why are lists not efficient for use as queues?",
+          "expected_answer": "Inserting or popping at the beginning is slow because all the other elements have to be shifted by one.",
+          "evidence": [
+            "all of the other elements have to be shifted by one"
+          ]
+        },
+        {
+          "id": "py-06",
+          "type": "fact",
+          "question": "What should you use to implement a queue in Python?",
+          "expected_answer": "collections.deque, which has fast appends and pops from both ends.",
+          "evidence": [
+            "designed to have fast appends and pops from both ends"
+          ]
+        },
+        {
+          "id": "py-07",
+          "type": "multi-part",
+          "question": "What does a list comprehension consist of?",
+          "expected_answer": "Brackets containing an expression followed by a for clause, then zero or more for or if clauses.",
+          "evidence": [
+            "brackets containing an expression followed by"
+          ]
+        },
+        {
+          "id": "py-08",
+          "type": "fact",
+          "question": "How do you create an empty set?",
+          "expected_answer": "With set(), not {}, because {} creates an empty dictionary.",
+          "evidence": [
+            "to create an empty set you have to use"
+          ]
+        },
+        {
+          "id": "py-09",
+          "type": "fact",
+          "question": "What is a set in Python?",
+          "expected_answer": "An unordered collection with no duplicate elements.",
+          "evidence": [
+            "unordered collection with no duplicate elements"
+          ]
+        },
+        {
+          "id": "py-10",
+          "type": "multi-part",
+          "question": "Which types can be used as dictionary keys?",
+          "expected_answer": "Any immutable type, such as strings and numbers; tuples only if they contain only strings, numbers or tuples. Lists cannot be keys.",
+          "evidence": [
+            "which can be any immutable type"
+          ]
+        },
+        {
+          "id": "py-11",
+          "type": "fact",
+          "question": "How can you avoid a KeyError when reading a key that may not exist?",
+          "expected_answer": "Use the get() method, which returns None or a given default value.",
+          "evidence": [
+            "use the get() method instead"
+          ]
+        },
+        {
+          "id": "py-12",
+          "type": "fact",
+          "question": "Which function gives both the index and the value when looping over a sequence?",
+          "expected_answer": "enumerate().",
+          "evidence": [
+            "at the same time using the enumerate() function"
+          ]
+        },
+        {
+          "id": "py-13",
+          "type": "multi-part",
+          "question": "How do tuples differ from lists?",
+          "expected_answer": "Tuples are immutable and usually hold a heterogeneous sequence accessed by unpacking or indexing; lists are mutable and usually homogeneous, accessed by iterating.",
+          "evidence": [
+            "immutable, and usually contain a heterogeneous sequence"
+          ]
+        },
+        {
+          "id": "py-14",
+          "type": "fact",
+          "question": "What does it mean that and and or are short-circuit operators?",
+          "expected_answer": "Their arguments are evaluated from left to right and evaluation stops as soon as the outcome is determined.",
+          "evidence": [
+            "evaluation stops as soon as the outcome is determined"
+          ]
+        },
+        {
+          "id": "py-15",
+          "type": "fact",
+          "question": "What ordering is used to compare two sequences of the same type?",
+          "expected_answer": "Lexicographical ordering.",
+          "evidence": [
+            "the comparison uses lexicographical ordering"
+          ]
+        },
+        {
+          "id": "py-16",
+          "type": "unanswerable",
+          "question": "What is the time complexity of looking up a key in a dictionary?",
+          "expected_answer": "The source does not contain enough information to answer this question.",
+          "evidence": []
+        },
+        {
+          "id": "py-17",
+          "type": "unanswerable",
+          "question": "In which Python version was the walrus operator introduced?",
+          "expected_answer": "The source does not contain enough information to answer this question.",
+          "evidence": []
+        }
+      ]
+    }
+  ]
+}

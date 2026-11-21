@@ -96,6 +96,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Only measure Hit@k and MRR from evidence strings (embedding cost only).",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print the plan and API call counts, then exit.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an interrupted run in the same --out folder, skipping finished rows.",
+    )
     parser.add_argument("--out", type=Path, default=None, help="Results folder.")
     parser.add_argument("--chroma-path", type=Path, default=EXPERIMENTS_DIR / ".chroma")
     parser.add_argument("--cache-dir", type=Path, default=EXPERIMENTS_DIR / ".cache")
@@ -190,9 +195,38 @@ def _error_row(base: dict[str, Any], error: Exception) -> dict[str, Any]:
     return {**base, "error": f"{type(error).__name__}: {error}"}
 
 
+CHECKPOINT_NAME = "cases.partial.jsonl"
+
+
+def _row_key(row: dict[str, Any]) -> tuple:
+    return (row["case_id"], int(row["chunk_size"]), int(row["top_k"]), int(row["repeat"]))
+
+
+def load_checkpoint(path: Path) -> list[dict[str, Any]]:
+    """Rows already finished by an earlier, interrupted run (errors excluded,
+    so failed cases are retried)."""
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if not row.get("error"):
+                rows.append(row)
+    return rows
+
+
 # The experiment
-def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], list[dict]]:
-    """Run the grid and return (per-case rows, per-configuration summary)."""
+def run(
+    args: argparse.Namespace,
+    dataset: dict[str, Any],
+    checkpoint: Path | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Run the grid and return (per-case rows, per-configuration summary).
+
+    With a checkpoint path, every finished row is appended to it immediately,
+    and rows already in it are skipped, so an interrupted run can resume.
+    """
     # Imported here so --dry-run works without API keys or Chroma installed.
     from backend import rag
 
@@ -200,8 +234,32 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
     # collections out of the web app's store.
     os.environ["CHROMA_PATH"] = str(args.chroma_path)
 
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = load_checkpoint(checkpoint) if checkpoint else []
+    done = {_row_key(row) for row in rows}
+    if done:
+        print(f"Resuming: {len(done)} finished rows loaded from {checkpoint}")
+    checkpoint_file = None
+    if checkpoint:
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_file = checkpoint.open("a", encoding="utf-8")
+
+    def record(row: dict[str, Any]) -> None:
+        rows.append(row)
+        if checkpoint_file:
+            checkpoint_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            checkpoint_file.flush()
+
+    try:
+        _run_grid(args, dataset, rag, done, record)
+    finally:
+        if checkpoint_file:
+            checkpoint_file.close()
+    return rows, summarize(rows)
+
+
+def _run_grid(args, dataset, rag, done: set, record) -> None:
     max_k = max(args.top_k)
+    repeats = range(1, (1 if args.retrieval_only else args.repeats) + 1)
 
     for source_index, source in enumerate(dataset["sources"]):
         page = fetch_markdown_cached(source["url"], args.cache_dir)
@@ -209,6 +267,15 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
 
         for chunk_size in args.chunk_sizes:
             overlap = overlap_for(chunk_size, args.overlap_ratio)
+            todo = [
+                (case["id"], chunk_size, k, repeat)
+                for case in source["cases"]
+                for k in args.top_k
+                for repeat in repeats
+            ]
+            if all(key in done for key in todo):
+                print(f"  chunk_size={chunk_size}: already finished, skipping")
+                continue
             collection = f"exp_s{source_index}_c{chunk_size}_o{overlap}"
             chunks = rag.create_knowledge_base(
                 page["markdown"],
@@ -223,6 +290,7 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
                 base = {
                     "source_url": page["url"],
                     "case_id": case["id"],
+                    "question_type": case.get("type", ""),
                     "question": case["question"],
                     "chunk_size": chunk_size,
                     "overlap": overlap,
@@ -230,6 +298,8 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
                 }
 
                 if args.retrieval_only:
+                    if all((case["id"], chunk_size, k, 1) in done for k in args.top_k):
+                        continue
                     # Retrieval is deterministic, so retrieve once at the
                     # largest k and score every smaller k from that ranking.
                     started = time.perf_counter()
@@ -239,12 +309,12 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
                         )
                     except Exception as exc:  # keep the run going; record it
                         for k in args.top_k:
-                            rows.append(_error_row({**base, "top_k": k, "repeat": 1}, exc))
+                            record(_error_row({**base, "top_k": k, "repeat": 1}, exc))
                         continue
                     latency = time.perf_counter() - started
                     rank = evidence_rank([c["text"] for c in retrieved], case["evidence"])
                     for k in args.top_k:
-                        rows.append(
+                        record(
                             {
                                 **base,
                                 "top_k": k,
@@ -259,6 +329,8 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
 
                 for k in args.top_k:
                     for repeat in range(1, args.repeats + 1):
+                        if (case["id"], chunk_size, k, repeat) in done:
+                            continue
                         row_base = {**base, "top_k": k, "repeat": repeat}
                         started = time.perf_counter()
                         try:
@@ -269,7 +341,7 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
                                 collection_name=collection,
                             )
                         except Exception as exc:  # keep the run going; record it
-                            rows.append(_error_row(row_base, exc))
+                            record(_error_row(row_base, exc))
                             print(f"    {case['id']} k={k} r={repeat}: ERROR {exc}")
                             continue
                         latency = time.perf_counter() - started
@@ -277,7 +349,7 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
                             [c["text"] for c in result["retrieved_chunks"]],
                             case["evidence"],
                         )
-                        rows.append(
+                        record(
                             {
                                 **row_base,
                                 **{metric: result[metric] for metric in JUDGE_METRICS},
@@ -294,7 +366,6 @@ def run(args: argparse.Namespace, dataset: dict[str, Any]) -> tuple[list[dict], 
                             f"overall={result['overall_score']:.2f} rank={rank}"
                         )
 
-    return rows, summarize(rows)
 
 
 def write_results(
@@ -361,11 +432,16 @@ def main(argv: list[str] | None = None) -> int:
         f"pages: {settings['page_fetcher']}"
     )
 
-    rows, summary = run(args, dataset)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     mode = "retrieval" if args.retrieval_only else "full"
     out_dir = args.out or EXPERIMENTS_DIR / "results" / f"{dataset['name']}-{mode}-{stamp}"
+    checkpoint = out_dir / CHECKPOINT_NAME
+    if checkpoint.exists() and not args.resume:
+        checkpoint.unlink()  # a fresh run starts from nothing
+
+    rows, summary = run(args, dataset, checkpoint=checkpoint)
     write_results(out_dir, rows, summary, args, dataset)
+    checkpoint.unlink(missing_ok=True)  # cases.csv now holds every row
 
     print()
     print(summary_markdown(summary, judged=not args.retrieval_only))

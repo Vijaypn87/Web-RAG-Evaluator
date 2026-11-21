@@ -257,3 +257,52 @@ def csv_rows(path):
 
     with path.open(encoding="utf-8") as handle:
         yield from csv.DictReader(handle)
+
+
+def test_interrupted_run_resumes_without_redoing_work(offline, monkeypatch):
+    calls = []
+
+    def fake_evaluate(question, expected_answer, *, top_k, collection_name):
+        calls.append((question, top_k, collection_name))
+        if len(calls) == 3:
+            raise KeyboardInterrupt  # simulate the process being stopped
+        retrieved = rag.retrieve_chunks(question, top_k=top_k, collection_name=collection_name)
+        return {
+            "retrieved_chunks": retrieved, "generated_answer": "a [S1]",
+            "retrieval_relevance": 1.0, "groundedness": 1.0, "answer_correctness": 1.0,
+            "citation_validity": 1.0, "overall_score": 1.0, "passed": True,
+        }
+
+    monkeypatch.setattr(rag, "evaluate_case", fake_evaluate)
+    with pytest.raises(KeyboardInterrupt):
+        run_experiment.main(_args(offline))
+    checkpoint = offline["tmp"] / "out" / run_experiment.CHECKPOINT_NAME
+    assert len(checkpoint.read_text(encoding="utf-8").splitlines()) == 2
+
+    calls.clear()
+    monkeypatch.setattr(rag, "evaluate_case", lambda *a, **kw: (calls.append(1), fake_result())[1])
+    assert run_experiment.main(_args(offline, "--resume")) == 0
+    # 2 cases x 2 sizes x 2 k = 8 rows in total; 2 were already finished.
+    assert len(calls) == 6
+    assert len(list(csv_rows(offline["tmp"] / "out" / "cases.csv"))) == 8
+    assert not checkpoint.exists()
+
+
+def test_fresh_run_ignores_old_checkpoint(offline, monkeypatch):
+    out = offline["tmp"] / "out"
+    out.mkdir()
+    (out / run_experiment.CHECKPOINT_NAME).write_text(
+        '{"case_id": "a", "chunk_size": 200, "top_k": 1, "repeat": 1}\n', encoding="utf-8"
+    )
+    calls = []
+    monkeypatch.setattr(rag, "evaluate_case", lambda *a, **kw: (calls.append(1), fake_result())[1])
+    run_experiment.main(_args(offline))
+    assert len(calls) == 8
+
+
+def fake_result():
+    return {
+        "retrieved_chunks": [], "generated_answer": "a [S1]",
+        "retrieval_relevance": 1.0, "groundedness": 1.0, "answer_correctness": 1.0,
+        "citation_validity": 1.0, "overall_score": 1.0, "passed": True,
+    }

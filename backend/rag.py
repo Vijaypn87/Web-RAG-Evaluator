@@ -1115,11 +1115,32 @@ def answer_question(
 
 
 # Evaluation scoring
+_REFUSAL_PATTERN = re.compile(
+    r"\b(?:do(?:es)?\s+not|don't|doesn't)\s+(?:contain|provide|include|have)\s+"
+    r"(?:enough|sufficient|any)\s+information\b"
+    r"|\bnot\s+enough\s+information\b",
+    re.IGNORECASE,
+)
+
+
+def is_refusal(answer: str) -> bool:
+    """True for a short "not enough information" reply, even if reworded.
+
+    Smaller models often paraphrase the required sentence ("The source
+    passages do not contain enough information..."); those are still
+    correct refusals and should not be scored as uncited answers.
+    """
+    text = answer.strip()
+    if text == INSUFFICIENT_INFORMATION_ANSWER:
+        return True
+    return len(text) <= 300 and bool(_REFUSAL_PATTERN.search(text))
+
+
 def _citation_validity(answer_result: AnswerResult) -> float:
     """Score the citations the model actually wrote, before any cleanup.
 
-    - The exact "not enough information" answer needs no citations, so it
-      scores 1 when it has none.
+    - A "not enough information" answer (exact or reworded) needs no
+      citations, so it scores 1 when it has none.
     - Any other answer must cite its sources; an uncited answer scores 0.
     - Otherwise the score is the share of written citation labels that refer
       to a passage that was really supplied to the model.
@@ -1128,7 +1149,7 @@ def _citation_validity(answer_result: AnswerResult) -> float:
     removed, so checking it would always return 1.
     """
     raw_labels = answer_result["raw_citation_labels"]
-    if answer_result["answer"].strip() == INSUFFICIENT_INFORMATION_ANSWER:
+    if is_refusal(answer_result["answer"]):
         return float(not raw_labels)
     if not raw_labels:
         return 0.0

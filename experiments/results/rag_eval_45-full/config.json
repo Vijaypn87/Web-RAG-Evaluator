@@ -1,0 +1,29 @@
+{
+  "dataset": "experiments\\datasets\\rag_eval_45.json",
+  "dataset_name": "rag_eval_45",
+  "chunk_sizes": [
+    400,
+    800,
+    1200
+  ],
+  "top_k": [
+    2,
+    4,
+    8
+  ],
+  "overlap_ratio": 0.125,
+  "repeats": 1,
+  "retrieval_only": false,
+  "llm_provider": "ollama",
+  "embedding_model": "nomic-embed-text",
+  "chat_model": "llama3.2",
+  "evaluator_model": "llama3.2",
+  "page_fetcher": "local",
+  "git_commit": "00bbd47",
+  "finished_at": "2026-11-21T17:23:43.517325+00:00",
+  "config_keys": [
+    "chunk_size",
+    "overlap",
+    "top_k"
+  ]
+}
