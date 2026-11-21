@@ -1,0 +1,71 @@
+{
+  "name": "sample_rag_wikipedia",
+  "description": "Small sample (10 cases) to check the pipeline end to end. Write your own 30-50 cases for a real experiment.",
+  "sources": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Retrieval-augmented_generation",
+      "cases": [
+        {
+          "id": "rag-01",
+          "question": "In what year was retrieval-augmented generation first proposed?",
+          "expected_answer": "It was first proposed in 2020.",
+          "evidence": ["first proposed in 2020", "introduced in a 2020 paper"]
+        },
+        {
+          "id": "rag-02",
+          "question": "What incorrect information did Google's Bard give in its first demonstration, and what did it cost Google?",
+          "expected_answer": "Bard gave incorrect information about the James Webb Space Telescope, contributing to a $100 billion decline in Google's stock value.",
+          "evidence": ["$100 billion decline"]
+        },
+        {
+          "id": "rag-03",
+          "question": "What is the technique of adding relevant context to the user's input called?",
+          "expected_answer": "Prompt stuffing.",
+          "evidence": ["prompt stuffing"]
+        },
+        {
+          "id": "rag-04",
+          "question": "Where are the embeddings stored so that documents can be retrieved?",
+          "expected_answer": "In a vector database.",
+          "evidence": ["stored in a vector database"]
+        },
+        {
+          "id": "rag-05",
+          "question": "How do sparse vectors differ from dense vectors?",
+          "expected_answer": "Sparse vectors encode the identity of a word, are dictionary-length and mostly zeros; dense vectors encode meaning, are more compact and contain fewer zeros.",
+          "evidence": ["Sparse vectors, which encode the identity of a word"]
+        },
+        {
+          "id": "rag-06",
+          "question": "What task can be used to pre-train the retriever?",
+          "expected_answer": "The Inverse Cloze Task (ICT), which has the model predict masked text within documents.",
+          "evidence": ["Inverse Cloze Task"]
+        },
+        {
+          "id": "rag-07",
+          "question": "What is the more reproducible version of Retro called?",
+          "expected_answer": "Retro++, which includes in-context RAG.",
+          "evidence": ["is called Retro++"]
+        },
+        {
+          "id": "rag-08",
+          "question": "What trade-off does chunk size involve?",
+          "expected_answer": "A trade-off between focused retrieval and contextual completeness: smaller chunks isolate relevant information but can omit context, while larger chunks keep context but may include irrelevant material and use more of the input budget.",
+          "evidence": ["trade-off between focused retrieval and contextual completeness"]
+        },
+        {
+          "id": "rag-09",
+          "question": "How does hybrid search help when vector search misses key facts?",
+          "expected_answer": "It also runs a traditional full-text search and combines those results with the vector-search chunks before feeding them to the language model.",
+          "evidence": ["traditional text search"]
+        },
+        {
+          "id": "rag-10",
+          "question": "Does RAG prevent hallucinations?",
+          "expected_answer": "No. RAG does not prevent hallucinations; the model can still hallucinate around the source material.",
+          "evidence": ["RAG does not prevent hallucinations"]
+        }
+      ]
+    }
+  ]
+}
