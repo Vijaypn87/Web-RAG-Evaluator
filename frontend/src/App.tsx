@@ -47,6 +47,7 @@ type EvaluationResult = {
   citation_validity: number
   overall_score: number
   passed: boolean
+  error?: string | null
 }
 
 const defaultEvaluationCases: EvaluationCaseInput[] = [1, 2, 3].map((id) => ({
@@ -457,7 +458,9 @@ function Evals() {
                   {results.map((result, index) => (
                     <tr key={`${result.question}-${index}`}>
                       <td
-                        title={`Expected: ${result.expected_answer}\nGenerated: ${result.generated_answer}`}
+                        title={result.error
+                          ? `Error: ${result.error}`
+                          : `Expected: ${result.expected_answer}\nGenerated: ${result.generated_answer}`}
                       >
                         {result.question}
                       </td>
@@ -467,8 +470,11 @@ function Evals() {
                       <td>{result.citation_validity.toFixed(2)}</td>
                       <td className="eval-table__overall">{result.overall_score.toFixed(2)}</td>
                       <td>
-                        <span className={result.passed ? 'eval-status eval-status--pass' : 'eval-status eval-status--fail'}>
-                          {result.passed ? 'Pass' : 'Fail'}
+                        <span
+                          className={result.passed ? 'eval-status eval-status--pass' : 'eval-status eval-status--fail'}
+                          title={result.error ?? undefined}
+                        >
+                          {result.error ? 'Error' : result.passed ? 'Pass' : 'Fail'}
                         </span>
                       </td>
                     </tr>

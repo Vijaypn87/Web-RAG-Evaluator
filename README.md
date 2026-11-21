@@ -134,6 +134,27 @@ Overall Score =
 
 A case is considered **passed when the overall score is ≥ 0.70**.
 
+**How citation validity is scored.** It is measured on the citations the model
+actually wrote, *before* invented labels are removed from the displayed answer:
+
+* The exact "not enough information" answer scores 1 when it has no citations.
+* Any other answer with no citations scores 0.
+* Otherwise the score is the share of written labels (for example `[S2]`) that
+  point to a passage really supplied to the model. Grouped citations such as
+  `[S1, S2]` are counted as `[S1][S2]`.
+
+A run can contain up to **10 cases**. If one case fails (for example an API
+timeout), that row shows **Error** and the other cases still return scores.
+
+### Running the tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest
+```
+
+The tests do not call OpenAI or Context.dev.
+
 ## 🚀 Setup
 
 ### 1. Clone the repository

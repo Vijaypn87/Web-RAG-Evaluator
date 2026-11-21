@@ -1,8 +1,10 @@
 """Small, framework-free helpers for the RAG pipeline."""
 
 import ipaddress
+import logging
 import os
 import re
+import threading
 from typing import Any, TypedDict
 from urllib.parse import urlparse
 
@@ -19,7 +21,21 @@ DEFAULT_CHAT_MODEL = "gpt-5-mini"
 TARGET_CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 EMBEDDING_BATCH_SIZE = 100
-MAX_OUTPUT_TOKENS = 1_200
+# Reasoning models (such as gpt-5-mini) spend part of this budget on hidden
+# reasoning, so leave enough room for the visible answer as well.
+MAX_OUTPUT_TOKENS = 4_000
+PASS_THRESHOLD = 0.70
+
+logger = logging.getLogger(__name__)
+
+# Serialises access to the single shared Chroma collection so an ingest that
+# replaces the collection cannot interleave with a query that is reading it.
+_knowledge_base_lock = threading.Lock()
+
+# Any bracketed token that looks like a source label, e.g. [S1] or [S1, S2].
+CITATION_TOKEN = re.compile(r"\[S[^\]]*\]")
+# A grouped citation such as [S1, S2] or [S1; S3].
+CITATION_GROUP = re.compile(r"\[\s*(S\d+(?:\s*[,;]\s*S\d+)+)\s*\]")
 INSUFFICIENT_INFORMATION_ANSWER = (
     "The source does not contain enough information to answer this question."
 )
@@ -93,6 +109,8 @@ class AnswerResult(TypedDict):
     citations: list[Citation]
     retrieved_chunks: list[LabeledRetrievedChunk]
     source_url: str
+    # Every citation label the model wrote, before invented labels were removed.
+    raw_citation_labels: list[str]
 
 
 class MetricEvaluation(BaseModel):
@@ -201,8 +219,9 @@ def fetch_website_markdown(url: str) -> WebsiteMarkdown:
             timeout_ms=60_000,
         )
     except ContextDevError as exc:
+        logger.warning("Context.dev scrape failed for %s", public_url, exc_info=True)
         raise WebsiteIngestionError(
-            f"Context.dev could not ingest this webpage: {exc}"
+            "Context.dev could not ingest this webpage."
         ) from exc
 
     if not response.markdown.strip():
@@ -371,9 +390,8 @@ def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
             ordered_data = sorted(response.data, key=lambda item: item.index)
             embeddings.extend(item.embedding for item in ordered_data)
     except OpenAIError as exc:
-        raise KnowledgeBaseError(
-            f"OpenAI could not create embeddings: {exc}"
-        ) from exc
+        logger.warning("OpenAI embedding request failed", exc_info=True)
+        raise KnowledgeBaseError("OpenAI could not create embeddings.") from exc
 
     if len(embeddings) != len(texts):
         raise KnowledgeBaseError("OpenAI returned an unexpected number of embeddings.")
@@ -387,7 +405,8 @@ def _chroma_client() -> chromadb.ClientAPI:
     try:
         return chromadb.PersistentClient(path=chroma_path)
     except ChromaError as exc:
-        raise KnowledgeBaseError(f"Chroma could not open its local store: {exc}") from exc
+        logger.warning("Chroma could not open %s", chroma_path, exc_info=True)
+        raise KnowledgeBaseError("Chroma could not open its local store.") from exc
 
 
 def create_knowledge_base(markdown: str, source_url: str) -> list[Chunk]:
@@ -404,32 +423,34 @@ def create_knowledge_base(markdown: str, source_url: str) -> list[Chunk]:
     client = _chroma_client()
 
     try:
-        try:
-            client.delete_collection(name=COLLECTION_NAME)
-        except NotFoundError:
-            pass
+        with _knowledge_base_lock:
+            try:
+                client.delete_collection(name=COLLECTION_NAME)
+            except NotFoundError:
+                pass
 
-        collection = client.create_collection(
-            name=COLLECTION_NAME,
-            configuration={"hnsw": {"space": "cosine"}},
-            metadata={"source_url": source_url, "embedding_model": model},
-            embedding_function=None,
-        )
-        collection.add(
-            ids=[chunk["chunk_id"] for chunk in chunks],
-            documents=[chunk["text"] for chunk in chunks],
-            embeddings=embeddings,
-            metadatas=[
-                {
-                    "source_url": chunk["source_url"],
-                    "chunk_number": chunk["chunk_number"],
-                }
-                for chunk in chunks
-            ],
-        )
+            collection = client.create_collection(
+                name=COLLECTION_NAME,
+                configuration={"hnsw": {"space": "cosine"}},
+                metadata={"source_url": source_url, "embedding_model": model},
+                embedding_function=None,
+            )
+            collection.add(
+                ids=[chunk["chunk_id"] for chunk in chunks],
+                documents=[chunk["text"] for chunk in chunks],
+                embeddings=embeddings,
+                metadatas=[
+                    {
+                        "source_url": chunk["source_url"],
+                        "chunk_number": chunk["chunk_number"],
+                    }
+                    for chunk in chunks
+                ],
+            )
     except ChromaError as exc:
+        logger.warning("Chroma could not build the collection", exc_info=True)
         raise KnowledgeBaseError(
-            f"Chroma could not create the knowledge base: {exc}"
+            "Chroma could not create the knowledge base."
         ) from exc
 
     return chunks
@@ -444,32 +465,44 @@ def retrieve_chunks(question: str, top_k: int = 4) -> list[RetrievedChunk]:
         raise RAGInputError("top_k must be at least 1.")
 
     client = _chroma_client()
-    try:
-        collection = client.get_collection(
-            name=COLLECTION_NAME,
-            embedding_function=None,
-        )
-    except NotFoundError as exc:
-        raise KnowledgeBaseError(
-            "No knowledge base exists. Ingest a website first."
-        ) from exc
+    missing_message = "No knowledge base exists. Ingest a website first."
 
-    chunk_count = collection.count()
-    if chunk_count == 0:
-        return []
+    # Read the collection's embedding model under the lock, embed the question
+    # without holding it, then query under the lock again. Re-fetching the
+    # collection for the query avoids using a handle that a concurrent ingest
+    # has already deleted.
+    with _knowledge_base_lock:
+        try:
+            collection = client.get_collection(
+                name=COLLECTION_NAME,
+                embedding_function=None,
+            )
+        except NotFoundError as exc:
+            raise KnowledgeBaseError(missing_message) from exc
+        collection_metadata = collection.metadata or {}
 
-    collection_metadata = collection.metadata or {}
     model = str(collection_metadata.get("embedding_model") or _embedding_model())
     question_embedding = _embed_texts([question.strip()], model)[0]
 
     try:
-        results = collection.query(
-            query_embeddings=[question_embedding],
-            n_results=min(top_k, chunk_count),
-            include=["documents", "metadatas", "distances"],
-        )
+        with _knowledge_base_lock:
+            collection = client.get_collection(
+                name=COLLECTION_NAME,
+                embedding_function=None,
+            )
+            chunk_count = collection.count()
+            if chunk_count == 0:
+                return []
+            results = collection.query(
+                query_embeddings=[question_embedding],
+                n_results=min(top_k, chunk_count),
+                include=["documents", "metadatas", "distances"],
+            )
+    except NotFoundError as exc:
+        raise KnowledgeBaseError(missing_message) from exc
     except ChromaError as exc:
-        raise KnowledgeBaseError(f"Chroma retrieval failed: {exc}") from exc
+        logger.warning("Chroma query failed", exc_info=True)
+        raise KnowledgeBaseError("Chroma retrieval failed.") from exc
 
     documents = (results.get("documents") or [[]])[0]
     metadatas = (results.get("metadatas") or [[]])[0]
@@ -495,6 +528,21 @@ def retrieve_chunks(question: str, top_k: int = 4) -> list[RetrievedChunk]:
     return retrieved
 
 
+def _expand_citation_groups(answer: str) -> str:
+    """Rewrite grouped citations such as [S1, S2] as [S1][S2]."""
+
+    def expand(match: re.Match[str]) -> str:
+        labels = re.split(r"\s*[,;]\s*", match.group(1).strip())
+        return "".join(f"[{label}]" for label in labels)
+
+    return CITATION_GROUP.sub(expand, answer)
+
+
+def _citation_labels(answer: str) -> list[str]:
+    """Return every citation-like token in the answer, in order, with repeats."""
+    return CITATION_TOKEN.findall(answer)
+
+
 def _validated_citation_labels(
     answer: str,
     supplied_labels: set[str],
@@ -512,7 +560,7 @@ def _validated_citation_labels(
             valid_labels.append(label)
         return label
 
-    cleaned_answer = re.sub(r"\[S[^\]]*\]", validate, answer)
+    cleaned_answer = CITATION_TOKEN.sub(validate, answer)
     cleaned_answer = re.sub(r"[ \t]+([,.;:!?])", r"\1", cleaned_answer)
     cleaned_answer = re.sub(r"[ \t]{2,}", " ", cleaned_answer).strip()
     return cleaned_answer, valid_labels
@@ -543,6 +591,7 @@ def answer_question(question: str) -> AnswerResult:
             "citations": [],
             "retrieved_chunks": [],
             "source_url": source_url,
+            "raw_citation_labels": [],
         }
 
     context = _format_context(labeled_chunks)
@@ -557,11 +606,10 @@ def answer_question(question: str) -> AnswerResult:
             store=False,
         )
     except OpenAIError as exc:
-        raise KnowledgeBaseError(
-            f"OpenAI could not answer the question: {exc}"
-        ) from exc
+        logger.warning("OpenAI answer request failed", exc_info=True)
+        raise KnowledgeBaseError("OpenAI could not answer the question.") from exc
 
-    raw_answer = response.output_text.strip()
+    raw_answer = _expand_citation_groups(response.output_text.strip())
     if not raw_answer:
         incomplete_reason = getattr(response.incomplete_details, "reason", None)
         if incomplete_reason == "max_output_tokens":
@@ -590,28 +638,34 @@ def answer_question(question: str) -> AnswerResult:
         "citations": citations,
         "retrieved_chunks": labeled_chunks,
         "source_url": source_url,
+        "raw_citation_labels": _citation_labels(raw_answer),
     }
 
 
 # Evaluation scoring
 def _citation_validity(answer_result: AnswerResult) -> float:
-    """Return 1 when every returned citation maps to a supplied source label."""
+    """Score the citations the model actually wrote, before any cleanup.
+
+    - The exact "not enough information" answer needs no citations, so it
+      scores 1 when it has none.
+    - Any other answer must cite its sources; an uncited answer scores 0.
+    - Otherwise the score is the share of written citation labels that refer
+      to a passage that was really supplied to the model.
+
+    Scoring the raw labels matters: the cleaned answer has had invented labels
+    removed, so checking it would always return 1.
+    """
+    raw_labels = answer_result["raw_citation_labels"]
+    if answer_result["answer"].strip() == INSUFFICIENT_INFORMATION_ANSWER:
+        return float(not raw_labels)
+    if not raw_labels:
+        return 0.0
+
     supplied_labels = {
         chunk["label"] for chunk in answer_result["retrieved_chunks"]
     }
-    answer_labels = set(re.findall(r"\[S\d+\]", answer_result["answer"]))
-    returned_labels = {
-        citation["label"] for citation in answer_result["citations"]
-    }
-
-    labels_are_supplied = answer_labels.issubset(supplied_labels)
-    returned_are_supplied = returned_labels.issubset(supplied_labels)
-    response_is_consistent = answer_labels == returned_labels
-    return float(
-        labels_are_supplied
-        and returned_are_supplied
-        and response_is_consistent
-    )
+    valid_count = sum(label in supplied_labels for label in raw_labels)
+    return round(valid_count / len(raw_labels), 3)
 
 
 def _bounded_score(value: float) -> float:
@@ -656,9 +710,8 @@ Retrieved chunks:
             store=False,
         )
     except OpenAIError as exc:
-        raise KnowledgeBaseError(
-            f"OpenAI could not evaluate this case: {exc}"
-        ) from exc
+        logger.warning("OpenAI evaluator request failed", exc_info=True)
+        raise KnowledgeBaseError("OpenAI could not evaluate this case.") from exc
     except ValidationError as exc:
         raise KnowledgeBaseError(
             "OpenAI returned an incomplete structured evaluation. Try again."
@@ -697,7 +750,7 @@ Retrieved chunks:
         "answer_correctness": answer_correctness,
         "citation_validity": citation_validity,
         "overall_score": overall_score,
-        "passed": overall_score >= 0.70,
+        "passed": overall_score >= PASS_THRESHOLD,
         "explanations": {
             "retrieval_relevance": evaluation.retrieval_relevance.explanation,
             "groundedness": evaluation.groundedness.explanation,
