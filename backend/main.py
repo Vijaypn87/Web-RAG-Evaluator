@@ -133,6 +133,8 @@ class EvaluationCaseResponse(BaseModel):
     citation_validity: float = Field(ge=0, le=1)
     overall_score: float = Field(ge=0, le=1)
     passed: bool
+    # The judge's one-sentence reason for each LLM-scored metric.
+    explanations: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
 
 
