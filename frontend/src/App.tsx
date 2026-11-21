@@ -56,6 +56,68 @@ const defaultEvaluationCases: EvaluationCaseInput[] = [1, 2, 3].map((id) => ({
   expected_answer: '',
 }))
 
+// One-click examples so visitors can try the whole flow without preparing
+// anything. They all refer to the same Wikipedia article.
+const EXAMPLE_PAGE = {
+  label: 'Wikipedia: Retrieval-augmented generation',
+  url: 'https://en.wikipedia.org/wiki/Retrieval-augmented_generation',
+}
+
+const EXAMPLE_QUESTIONS = [
+  'What is prompt stuffing?',
+  'Does RAG prevent hallucinations?',
+  'What trade-off does chunk size involve?',
+]
+
+const EXAMPLE_CASES: EvaluationCaseInput[] = [
+  {
+    id: 1,
+    question: 'In what year was retrieval-augmented generation first proposed?',
+    expected_answer: 'It was first proposed in 2020.',
+  },
+  {
+    id: 2,
+    question: 'What is the more reproducible version of Retro called?',
+    expected_answer: 'Retro++, which includes in-context RAG.',
+  },
+  {
+    id: 3,
+    question: 'Where are the embeddings stored so that documents can be retrieved?',
+    expected_answer: 'In a vector database.',
+  },
+]
+
+const REPOSITORY_URL = 'https://github.com/Vijaypn87/Web-RAG-Evaluator'
+
+function ExampleChips({
+  label,
+  items,
+  onPick,
+  disabled,
+}: {
+  label: string
+  items: { text: string; value: string }[]
+  onPick: (value: string) => void
+  disabled: boolean
+}) {
+  return (
+    <div className="example-row">
+      <span className="example-row__label">{label}</span>
+      {items.map((item) => (
+        <button
+          key={item.value}
+          type="button"
+          className="example-chip"
+          onClick={() => onPick(item.value)}
+          disabled={disabled}
+        >
+          {item.text}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 function apiDetail(data: unknown, fallback: string) {
@@ -199,6 +261,12 @@ function KnowledgeBase({ info }: { info: BackendInfo | null }) {
             {isLoading ? 'Ingesting…' : 'Ingest Website'}
           </button>
         </div>
+        <ExampleChips
+          label="Try"
+          items={[{ text: EXAMPLE_PAGE.label, value: EXAMPLE_PAGE.url }]}
+          onPick={setUrl}
+          disabled={isLoading}
+        />
         <p id="url-help" className="field-note">
           Public HTTP and HTTPS webpages only. One page is kept in memory at a time.
         </p>
@@ -290,6 +358,12 @@ function Ask({ info }: { info: BackendInfo | null }) {
           aria-invalid={Boolean(error)}
           disabled={isLoading}
           required
+        />
+        <ExampleChips
+          label="Examples for the sample page"
+          items={EXAMPLE_QUESTIONS.map((text) => ({ text, value: text }))}
+          onPick={setQuestion}
+          disabled={isLoading}
         />
         <div className="card-actions">
           <span id="question-help" className="field-note">
@@ -469,6 +543,17 @@ function Evals() {
 
         <div className="eval-actions">
           <p className="field-note">Each case runs retrieval, answering, and one evaluator call.</p>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => {
+              setCases(EXAMPLE_CASES.map((evaluationCase) => ({ ...evaluationCase })))
+              setResults(null)
+            }}
+            disabled={isLoading}
+          >
+            Load example cases
+          </button>
           <button type="submit" disabled={isLoading || !canRun}>
             {isLoading ? 'Running evaluations…' : 'Run Evals'}
           </button>
@@ -583,7 +668,7 @@ function App() {
           <span />
         </div>
         <div>
-          <p className="kicker">Tutorial project</p>
+          <p className="kicker">RAG evaluation project</p>
           <h1>Web RAG Evaluator</h1>
         </div>
         <div className={`status-pill status-pill--${status}`} role="status">
@@ -640,6 +725,8 @@ function App() {
         <span>{providerLabel(info)}</span>
         <i />
         <span>{fetcherLabel(info)}</span>
+        <i />
+        <a href={REPOSITORY_URL} target="_blank" rel="noreferrer">Source on GitHub</a>
       </footer>
     </main>
   )
