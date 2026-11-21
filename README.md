@@ -191,12 +191,25 @@ Create `.env` from the provided example:
 Copy-Item .env.example .env
 ```
 
-Add your API keys:
+The example is set up for **free mode**, which needs no API keys:
 
-```env
-CONTEXT_DEV_API_KEY=your_context_dev_api_key
-OPENAI_API_KEY=your_openai_api_key
+| Part | Free mode (default) | Paid mode |
+|---|---|---|
+| Webpage → Markdown | `PAGE_FETCHER=local` (trafilatura, runs locally) | `PAGE_FETCHER=contextdev` + `CONTEXT_DEV_API_KEY` |
+| Embeddings, answers, judge | `LLM_PROVIDER=ollama` (models run on your computer) | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` |
+
+For free mode, install [Ollama](https://ollama.com), start it, and download
+the two models once:
+
+```powershell
+ollama pull llama3.2
+ollama pull nomic-embed-text
 ```
+
+`llama3.2` (3B) needs about 2 GB of memory and runs well on a 4 GB laptop GPU.
+For a stronger judge, pull a larger model such as `qwen2.5:7b` and set
+`OLLAMA_EVALUATOR_MODEL`. Small local models answer and judge less reliably
+than large hosted ones, so say which models you used when you report results.
 
 **Never commit `.env` to GitHub.**
 
@@ -273,6 +286,10 @@ Potential extensions include:
 API keys are kept on the **FastAPI backend** and are loaded from `.env`.
 
 The frontend communicates only with the backend API and does not directly expose the Context.dev or OpenAI credentials.
+
+In free mode the backend downloads pages itself. It accepts only public
+HTTP(S) pages, checks every redirect, refuses hosts that resolve to private or
+local addresses, and limits page size and download time.
 
 ## 📌 Project Goal
 

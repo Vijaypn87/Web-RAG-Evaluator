@@ -1,18 +1,22 @@
 """Small, framework-free helpers for the RAG pipeline."""
 
 import ipaddress
+import json
 import logging
 import os
 import re
+import socket
 import threading
 from typing import Any, TypedDict
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import chromadb
+import trafilatura
+import urllib3
 from chromadb.errors import ChromaError, NotFoundError
 from context.dev import ContextDev, ContextDevError
-from openai import OpenAI, OpenAIError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from openai import APIConnectionError, OpenAI, OpenAIError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 COLLECTION_NAME = "website_knowledge"
@@ -21,6 +25,21 @@ DEFAULT_CHAT_MODEL = "gpt-5-mini"
 TARGET_CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 DEFAULT_TOP_K = 4
+
+# Free, local alternative to OpenAI (https://ollama.com). Ollama serves an
+# OpenAI-compatible API, so the same client library talks to both.
+LLM_PROVIDERS = {"openai", "ollama"}
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+OLLAMA_DEFAULT_CHAT_MODEL = "llama3.2"
+OLLAMA_DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
+OLLAMA_TIMEOUT_SECONDS = 300
+
+# Free, local alternative to Context.dev for turning a webpage into Markdown.
+PAGE_FETCHERS = {"contextdev", "local"}
+LOCAL_FETCH_TIMEOUT_SECONDS = 30
+LOCAL_FETCH_MAX_BYTES = 5_000_000
+LOCAL_FETCH_MAX_REDIRECTS = 5
+LOCAL_FETCH_USER_AGENT = "WebRAGEvaluator/0.2 (educational RAG project)"
 EMBEDDING_BATCH_SIZE = 100
 # Reasoning models (such as gpt-5-mini) spend part of this budget on hidden
 # reasoning, so leave enough room for the visible answer as well.
@@ -120,11 +139,18 @@ class MetricEvaluation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     score: float = Field(ge=0, le=1)
-    explanation: str = Field(max_length=180)
+    explanation: str
+
+    @field_validator("explanation")
+    @classmethod
+    def _shorten(cls, value: str) -> str:
+        # Small local models often ignore length limits; trim rather than fail.
+        value = " ".join(value.split())
+        return value if len(value) <= 180 else value[:177].rstrip() + "..."
 
 
 class EvaluatorOutput(BaseModel):
-    """Structured output returned by the OpenAI evaluator call."""
+    """Structured output returned by the evaluator call."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -200,8 +226,154 @@ def _validate_public_url(url: str) -> str:
     return url
 
 
+def _page_fetcher() -> str:
+    """Pick how webpages are fetched: PAGE_FETCHER, else Context.dev if keyed."""
+    configured = os.getenv("PAGE_FETCHER", "").strip().lower()
+    if configured:
+        if configured not in PAGE_FETCHERS:
+            raise RAGInputError(
+                f"PAGE_FETCHER must be one of: {', '.join(sorted(PAGE_FETCHERS))}."
+            )
+        return configured
+    return "contextdev" if os.getenv("CONTEXT_DEV_API_KEY") else "local"
+
+
+def _ensure_public_host(hostname: str, port: int) -> None:
+    """Reject hostnames that resolve to private, loopback or link-local IPs.
+
+    The local fetcher downloads pages from this server, so a hostname that
+    points at an internal address must not be fetched. (A DNS answer can
+    still change between this check and the request; for a public deployment
+    put the backend behind an egress proxy as well.)
+    """
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise WebsiteIngestionError("The webpage's host name could not be resolved.") from exc
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not address.is_global:
+            raise RAGInputError("The webpage URL must be publicly accessible.")
+
+
+def _charset(content_type: str) -> str:
+    match = re.search(r"charset=([\w.-]+)", content_type, re.IGNORECASE)
+    return match.group(1) if match else "utf-8"
+
+
+def _download_html(
+    url: str,
+    *,
+    pool: urllib3.PoolManager | None = None,
+) -> tuple[str, str]:
+    """Download a public HTML page, checking every redirect hop. Returns (final_url, html).
+
+    urllib3 is used (rather than httpx) because some large sites, Wikipedia
+    included, reject httpx's connection fingerprint.
+    """
+    http = pool or urllib3.PoolManager(
+        headers={"User-Agent": os.getenv("LOCAL_FETCH_USER_AGENT", LOCAL_FETCH_USER_AGENT)},
+        timeout=urllib3.Timeout(total=LOCAL_FETCH_TIMEOUT_SECONDS),
+        retries=False,
+    )
+    current = url
+    for _ in range(LOCAL_FETCH_MAX_REDIRECTS + 1):
+        _validate_public_url(current)
+        parsed = urlparse(current)
+        _ensure_public_host(
+            parsed.hostname or "",
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+        )
+        try:
+            response = http.request("GET", current, redirect=False, preload_content=False)
+        except urllib3.exceptions.HTTPError as exc:
+            logger.warning("Local fetch failed for %s", current, exc_info=True)
+            raise WebsiteIngestionError("The webpage could not be downloaded.") from exc
+
+        try:
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location:
+                    raise WebsiteIngestionError("The webpage redirected without a location.")
+                current = urljoin(current, location)
+                continue
+            if response.status >= 400:
+                raise WebsiteIngestionError(f"The webpage returned HTTP {response.status}.")
+            content_type = (response.headers.get("content-type") or "").lower()
+            if content_type and "html" not in content_type and "xml" not in content_type:
+                raise WebsiteIngestionError("The URL is not an HTML webpage.")
+
+            body = bytearray()
+            for piece in response.stream(64 * 1024):
+                body.extend(piece)
+                if len(body) > LOCAL_FETCH_MAX_BYTES:
+                    raise WebsiteIngestionError("The webpage is too large to ingest.")
+            return current, bytes(body).decode(_charset(content_type), errors="replace")
+        except urllib3.exceptions.HTTPError as exc:
+            logger.warning("Local fetch failed for %s", current, exc_info=True)
+            raise WebsiteIngestionError("The webpage could not be downloaded.") from exc
+        finally:
+            response.release_conn()
+
+    raise WebsiteIngestionError("The webpage redirected too many times.")
+
+
+def _clean_extracted_markdown(markdown: str) -> str:
+    """Remove footnote markers and inline HTML that add noise to chunks.
+
+    Wikipedia-style pages turn into text like
+    "sources.[\\[1\\]](https://...#cite_note-1)<sup>...</sup>", which wastes
+    chunk space and embedding signal without adding meaning.
+    """
+    markdown = re.sub(r"</?sup>", "", markdown)
+    markdown = re.sub(r"\[\\\[[^\]]{1,40}\\\]\]\([^)]*\)", "", markdown)  # [\[1\]](url)
+    markdown = re.sub(r"\\\[(?:\d+|[a-z]|citation needed)\\\]", "", markdown)  # bare \[1\]
+    markdown = re.sub(r"[ \t]+\n", "\n", markdown)
+    return markdown.strip()
+
+
+def _fetch_with_trafilatura(
+    url: str,
+    *,
+    pool: urllib3.PoolManager | None = None,
+) -> WebsiteMarkdown:
+    """Free fetcher: download the page and extract its main content as Markdown."""
+    public_url = _validate_public_url(url)
+    final_url, html = _download_html(public_url, pool=pool)
+
+    markdown = trafilatura.extract(
+        html,
+        url=final_url,
+        output_format="markdown",
+        include_links=True,
+        include_images=False,
+        include_tables=True,
+        include_comments=False,
+        favor_recall=True,
+    )
+    markdown = _clean_extracted_markdown(markdown or "")
+    if not markdown:
+        raise WebsiteIngestionError("No readable main content was found on this webpage.")
+
+    metadata: dict[str, Any] = {"source_url": public_url, "final_url": final_url}
+    document = trafilatura.extract_metadata(html, default_url=final_url)
+    if document is not None:
+        for key in ("title", "description"):
+            value = getattr(document, key, None)
+            if value:
+                metadata[key] = value
+
+    return {"url": final_url, "markdown": markdown, "metadata": metadata}
+
+
 def fetch_website_markdown(url: str) -> WebsiteMarkdown:
-    """Fetch one page as linked Markdown, keeping only its main content."""
+    """Fetch one page as linked Markdown, keeping only its main content.
+
+    Uses Context.dev when configured, otherwise the free local fetcher.
+    """
+    if _page_fetcher() == "local":
+        return _fetch_with_trafilatura(url)
+
     api_key = os.getenv("CONTEXT_DEV_API_KEY")
     if not api_key:
         raise MissingContextDevAPIKeyError(
@@ -367,26 +539,81 @@ def _configured_model(variable: str, default: str) -> str:
     return os.getenv(variable, default).strip() or default
 
 
+def llm_provider() -> str:
+    """Return the configured model provider: "openai" (default) or "ollama"."""
+    provider = os.getenv("LLM_PROVIDER", "openai").strip().lower() or "openai"
+    if provider not in LLM_PROVIDERS:
+        raise RAGInputError(
+            f"LLM_PROVIDER must be one of: {', '.join(sorted(LLM_PROVIDERS))}."
+        )
+    return provider
+
+
+def _provider_label() -> str:
+    return "Ollama" if llm_provider() == "ollama" else "OpenAI"
+
+
 def _embedding_model() -> str:
+    if llm_provider() == "ollama":
+        return _configured_model("OLLAMA_EMBEDDING_MODEL", OLLAMA_DEFAULT_EMBEDDING_MODEL)
     return _configured_model("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
 
 def _chat_model() -> str:
+    if llm_provider() == "ollama":
+        return _configured_model("OLLAMA_CHAT_MODEL", OLLAMA_DEFAULT_CHAT_MODEL)
     return _configured_model("OPENAI_CHAT_MODEL", DEFAULT_CHAT_MODEL)
 
 
 def _evaluator_model() -> str:
+    if llm_provider() == "ollama":
+        return _configured_model("OLLAMA_EVALUATOR_MODEL", _chat_model())
     return _configured_model("OPENAI_EVALUATOR_MODEL", _chat_model())
 
 
+def model_settings() -> dict[str, str]:
+    """Describe the active provider and models (used in experiment records)."""
+    return {
+        "llm_provider": llm_provider(),
+        "embedding_model": _embedding_model(),
+        "chat_model": _chat_model(),
+        "evaluator_model": _evaluator_model(),
+        "page_fetcher": _page_fetcher(),
+    }
+
+
 def _openai_client() -> OpenAI:
-    """Create the official OpenAI client using the backend-only API key."""
+    """Create an OpenAI-compatible client for the configured provider."""
+    if llm_provider() == "ollama":
+        return OpenAI(
+            base_url=os.getenv("OLLAMA_BASE_URL", OLLAMA_DEFAULT_BASE_URL).strip()
+            or OLLAMA_DEFAULT_BASE_URL,
+            api_key="ollama",  # required by the client library, ignored by Ollama
+            timeout=OLLAMA_TIMEOUT_SECONDS,
+        )
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise MissingOpenAIAPIKeyError(
             "OPENAI_API_KEY is not configured on the backend."
         )
     return OpenAI(api_key=api_key)
+
+
+def _model_error(action: str, exc: OpenAIError) -> KnowledgeBaseError:
+    """Log a provider failure and return a short, user-safe error."""
+    label = _provider_label()
+    logger.warning("%s request failed while trying to %s", label, action, exc_info=True)
+    if isinstance(exc, APIConnectionError) and label == "Ollama":
+        return KnowledgeBaseError(
+            "Could not reach Ollama. Make sure the Ollama app is running."
+        )
+    message = str(getattr(exc, "message", "") or "")
+    if label == "Ollama" and "not found" in message.lower():
+        return KnowledgeBaseError(
+            "The Ollama model is not installed. Run `ollama pull <model>` first."
+        )
+    return KnowledgeBaseError(f"{label} could not {action}.")
 
 
 # Embeddings
@@ -402,8 +629,7 @@ def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
             ordered_data = sorted(response.data, key=lambda item: item.index)
             embeddings.extend(item.embedding for item in ordered_data)
     except OpenAIError as exc:
-        logger.warning("OpenAI embedding request failed", exc_info=True)
-        raise KnowledgeBaseError("OpenAI could not create embeddings.") from exc
+        raise _model_error("create embeddings", exc) from exc
 
     if len(embeddings) != len(texts):
         raise KnowledgeBaseError("OpenAI returned an unexpected number of embeddings.")
@@ -599,6 +825,123 @@ def _validated_citation_labels(
     return cleaned_answer, valid_labels
 
 
+# Model calls
+# Ollama only supports the Chat Completions API, so it uses that path; OpenAI
+# keeps using the Responses API. temperature/seed make local runs repeatable.
+def _evaluator_json_schema() -> dict[str, Any]:
+    """A flat JSON schema (no $refs) that local models can follow reliably."""
+    metric = {
+        "type": "object",
+        "properties": {
+            "score": {"type": "number", "minimum": 0, "maximum": 1},
+            "explanation": {"type": "string"},
+        },
+        "required": ["score", "explanation"],
+        "additionalProperties": False,
+    }
+    names = ("retrieval_relevance", "groundedness", "answer_correctness")
+    return {
+        "type": "object",
+        "properties": {name: metric for name in names},
+        "required": list(names),
+        "additionalProperties": False,
+    }
+
+
+def _generate_answer(response_input: str) -> str:
+    """Ask the configured chat model for a grounded answer."""
+    label = _provider_label()
+    client = _openai_client()
+    try:
+        if llm_provider() == "ollama":
+            completion = client.chat.completions.create(
+                model=_chat_model(),
+                messages=[
+                    {"role": "system", "content": ANSWER_INSTRUCTIONS},
+                    {"role": "user", "content": response_input},
+                ],
+                temperature=0,
+                seed=0,
+                max_tokens=MAX_OUTPUT_TOKENS,
+            )
+            text = (completion.choices[0].message.content or "").strip()
+            if not text:
+                raise KnowledgeBaseError(f"{label} returned an empty answer.")
+            return text
+
+        response = client.responses.create(
+            model=_chat_model(),
+            instructions=ANSWER_INSTRUCTIONS,
+            input=response_input,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            store=False,
+        )
+    except OpenAIError as exc:
+        raise _model_error("answer the question", exc) from exc
+
+    text = response.output_text.strip()
+    if not text:
+        incomplete_reason = getattr(response.incomplete_details, "reason", None)
+        if incomplete_reason == "max_output_tokens":
+            raise KnowledgeBaseError(
+                f"{label} exhausted the output-token budget before producing an answer."
+            )
+        raise KnowledgeBaseError(f"{label} returned an empty answer.")
+    return text
+
+
+def _generate_evaluation(evaluator_input: str) -> EvaluatorOutput:
+    """Ask the configured evaluator model for structured metric scores."""
+    label = _provider_label()
+    client = _openai_client()
+    try:
+        if llm_provider() == "ollama":
+            completion = client.chat.completions.create(
+                model=_evaluator_model(),
+                messages=[
+                    {"role": "system", "content": EVALUATOR_INSTRUCTIONS},
+                    {"role": "user", "content": evaluator_input},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "rag_evaluation",
+                        "schema": _evaluator_json_schema(),
+                    },
+                },
+                temperature=0,
+                seed=0,
+                max_tokens=MAX_OUTPUT_TOKENS,
+            )
+            content = completion.choices[0].message.content or ""
+            try:
+                return EvaluatorOutput.model_validate(json.loads(content))
+            except (json.JSONDecodeError, ValidationError) as exc:
+                logger.warning("Unusable evaluator output: %r", content[:500])
+                raise KnowledgeBaseError(
+                    f"{label} returned an evaluation that did not match the expected format."
+                ) from exc
+
+        response = client.responses.parse(
+            model=_evaluator_model(),
+            instructions=EVALUATOR_INSTRUCTIONS,
+            input=evaluator_input,
+            text_format=EvaluatorOutput,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            store=False,
+        )
+    except OpenAIError as exc:
+        raise _model_error("evaluate this case", exc) from exc
+    except ValidationError as exc:
+        raise KnowledgeBaseError(
+            f"{label} returned an incomplete structured evaluation. Try again."
+        ) from exc
+
+    if response.output_parsed is None:
+        raise KnowledgeBaseError(f"{label} returned no structured evaluation.")
+    return response.output_parsed
+
+
 # Grounded answer generation
 def _format_context(chunks: list[LabeledRetrievedChunk]) -> str:
     return "\n\n".join(
@@ -639,26 +982,7 @@ def answer_question(
     context = _format_context(labeled_chunks)
     response_input = f"Source passages:\n\n{context}\n\nQuestion:\n{question.strip()}"
 
-    try:
-        response = _openai_client().responses.create(
-            model=_chat_model(),
-            instructions=ANSWER_INSTRUCTIONS,
-            input=response_input,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-            store=False,
-        )
-    except OpenAIError as exc:
-        logger.warning("OpenAI answer request failed", exc_info=True)
-        raise KnowledgeBaseError("OpenAI could not answer the question.") from exc
-
-    raw_answer = _expand_citation_groups(response.output_text.strip())
-    if not raw_answer:
-        incomplete_reason = getattr(response.incomplete_details, "reason", None)
-        if incomplete_reason == "max_output_tokens":
-            raise KnowledgeBaseError(
-                "OpenAI exhausted the output-token budget before producing an answer."
-            )
-        raise KnowledgeBaseError("OpenAI returned an empty answer.")
+    raw_answer = _expand_citation_groups(_generate_answer(response_input))
 
     supplied_labels = {chunk["label"] for chunk in labeled_chunks}
     answer, valid_labels = _validated_citation_labels(
@@ -752,26 +1076,7 @@ Retrieved chunks:
 {retrieved_context}
 """
 
-    try:
-        response = _openai_client().responses.parse(
-            model=_evaluator_model(),
-            instructions=EVALUATOR_INSTRUCTIONS,
-            input=evaluator_input,
-            text_format=EvaluatorOutput,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-            store=False,
-        )
-    except OpenAIError as exc:
-        logger.warning("OpenAI evaluator request failed", exc_info=True)
-        raise KnowledgeBaseError("OpenAI could not evaluate this case.") from exc
-    except ValidationError as exc:
-        raise KnowledgeBaseError(
-            "OpenAI returned an incomplete structured evaluation. Try again."
-        ) from exc
-
-    evaluation = response.output_parsed
-    if evaluation is None:
-        raise KnowledgeBaseError("OpenAI returned no structured evaluation.")
+    evaluation = _generate_evaluation(evaluator_input)
 
     retrieval_relevance = _bounded_score(
         evaluation.retrieval_relevance.score

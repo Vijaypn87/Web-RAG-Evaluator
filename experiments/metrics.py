@@ -120,7 +120,13 @@ def _cell(entry: dict[str, Any], metric: str) -> str:
 
 def summary_markdown(summary: Sequence[dict[str, Any]], *, judged: bool) -> str:
     """Render the summary as a Markdown table for the README or a report."""
-    columns = [("Chunk size", None), ("Overlap", None), ("top-k", None), ("Chunks", None)]
+    columns = [
+        ("Chunk size", None),
+        ("Overlap", None),
+        ("top-k", None),
+        ("Chunks", None),
+        ("Context (chars)", None),
+    ]
     columns += [("Hit@k", "hit_at_k"), ("MRR", "reciprocal_rank")]
     if judged:
         columns += [
@@ -142,6 +148,7 @@ def summary_markdown(summary: Sequence[dict[str, Any]], *, judged: bool) -> str:
             str(entry["overlap"]),
             str(entry["top_k"]),
             "–" if entry["chunk_count"] is None else f"{entry['chunk_count']:g}",
+            f"~{int(entry['chunk_size']) * int(entry['top_k']):,}",
             _cell(entry, "hit_at_k"),
             _cell(entry, "reciprocal_rank"),
         ]
@@ -160,6 +167,8 @@ def summary_markdown(summary: Sequence[dict[str, Any]], *, judged: bool) -> str:
     lines.append("")
     lines.append(
         "Values are means over cases (and repeats) ± a 95% confidence half-width. "
-        "Hit@k and MRR use the dataset's evidence strings and need no LLM."
+        "Hit@k and MRR use the dataset's evidence strings and need no LLM. "
+        "Context is roughly chunk size × top-k: larger chunks contain more text, "
+        "so compare configurations with similar context sizes for a fair test."
     )
     return "\n".join(lines)

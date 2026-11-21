@@ -127,7 +127,7 @@ def plan_summary(dataset: dict[str, Any], args: argparse.Namespace) -> str:
         f"top-k: {args.top_k}",
         f"Mode: {'retrieval only' if args.retrieval_only else 'full (answer + judge)'}",
         "",
-        f"Context.dev page fetches: up to {sources} (cached after the first run)",
+        f"Page fetches: up to {sources} (cached after the first run)",
         f"Embedding batches for chunks: ~{sources * sizes}",
     ]
     if args.retrieval_only:
@@ -177,6 +177,13 @@ def _git_commit() -> str | None:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def _model_settings() -> dict[str, str]:
+    """Provider and model names, recorded so every result is reproducible."""
+    from backend.rag import model_settings
+
+    return model_settings()
 
 
 def _error_row(base: dict[str, Any], error: Exception) -> dict[str, Any]:
@@ -324,10 +331,7 @@ def write_results(
         "overlap_ratio": args.overlap_ratio,
         "repeats": args.repeats,
         "retrieval_only": args.retrieval_only,
-        "embedding_model": os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-        "chat_model": os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini"),
-        "evaluator_model": os.getenv("OPENAI_EVALUATOR_MODEL")
-        or os.getenv("OPENAI_CHAT_MODEL", "gpt-5-mini"),
+        **_model_settings(),
         "git_commit": _git_commit(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "config_keys": list(CONFIG_KEYS),
@@ -336,6 +340,12 @@ def write_results(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The Windows console defaults to a legacy code page that cannot print "±".
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     load_dotenv()
     args = parse_args(argv)
     dataset = load_dataset(args.dataset)
@@ -343,6 +353,13 @@ def main(argv: list[str] | None = None) -> int:
     print(plan_summary(dataset, args))
     if args.dry_run:
         return 0
+
+    settings = _model_settings()
+    print(
+        f"Provider: {settings['llm_provider']}  embeddings: {settings['embedding_model']}  "
+        f"chat: {settings['chat_model']}  judge: {settings['evaluator_model']}  "
+        f"pages: {settings['page_fetcher']}"
+    )
 
     rows, summary = run(args, dataset)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

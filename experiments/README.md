@@ -41,7 +41,15 @@ has 10 checked cases you can use to make sure everything runs.
 
 ## 2. Run it
 
-From the repository root, with `.env` filled in:
+From the repository root, with `.env` set up. Free mode (Ollama + local page
+fetching, see the main README) costs nothing. On a laptop with an RTX 3050,
+the retrieval-only sample takes about 3 minutes; the full 90-run sample takes
+much longer because every run makes two local model calls.
+
+> **Fairness note:** a bigger chunk contains more text, so it is more likely to
+> contain the evidence phrase. The summary shows **Context (chars)** ≈ chunk
+> size × top-k; when you compare chunk sizes, also compare rows with similar
+> context sizes (for example 400 × 4 vs 800 × 2 vs 1200 × ~1).
 
 ```powershell
 # See the grid and how many API calls it will make. No keys needed.
