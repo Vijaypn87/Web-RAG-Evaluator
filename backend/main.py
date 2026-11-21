@@ -1,9 +1,10 @@
 """FastAPI entry point for the Web RAG Evaluator."""
 
 import os
+from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -27,8 +28,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-app.state.current_url = None
-app.state.current_markdown = None
+# Each case costs one embedding, one answer, and one evaluator call, and the
+# request runs them one after another, so keep a batch small.
+MAX_EVALUATION_CASES = 10
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
@@ -120,9 +122,13 @@ class EvaluationCaseResponse(BaseModel):
     citation_validity: float = Field(ge=0, le=1)
     overall_score: float = Field(ge=0, le=1)
     passed: bool
+    error: str | None = None
 
 
 RAG_ERRORS = (RAGInputError, WebsiteIngestionError, KnowledgeBaseError)
+# Errors that would make every case fail the same way, so the whole request
+# should fail instead of returning a table of identical errors.
+BATCH_ERRORS = (RAGInputError, MissingContextDevAPIKeyError, MissingOpenAIAPIKeyError)
 
 
 def _http_error(error: Exception) -> HTTPException:
@@ -144,9 +150,6 @@ def ingest_website(payload: IngestRequest) -> IngestResponse:
         raise _http_error(exc) from exc
 
     metadata = website["metadata"]
-
-    app.state.current_url = website["url"]
-    app.state.current_markdown = markdown
 
     preview_length = 500
     markdown_preview = markdown[:preview_length]
@@ -183,24 +186,45 @@ def ask_question(payload: AskRequest) -> AskResponse:
     tags=["evaluations"],
 )
 def evaluate_cases(
-    cases: list[EvaluationCaseRequest],
+    cases: Annotated[
+        list[EvaluationCaseRequest],
+        Body(min_length=1, max_length=MAX_EVALUATION_CASES),
+    ],
 ) -> list[EvaluationCaseResponse]:
-    """Run the normal RAG pipeline and evaluator once for every case."""
-    if not cases:
-        raise HTTPException(
-            status_code=422,
-            detail="Provide at least one evaluation case.",
-        )
+    """Run the normal RAG pipeline and evaluator once for every case.
 
-    try:
-        results = [
-            evaluate_case(case.question, case.expected_answer)
-            for case in cases
-        ]
-    except RAG_ERRORS as exc:
-        raise _http_error(exc) from exc
+    A failure in one case is reported on that case's row instead of discarding
+    the results of the others. If every case fails, the request fails.
+    """
+    results: list[EvaluationCaseResponse] = []
+    first_error: Exception | None = None
 
-    return [
-        EvaluationCaseResponse.model_validate(result)
-        for result in results
-    ]
+    for case in cases:
+        try:
+            result = evaluate_case(case.question, case.expected_answer)
+        except BATCH_ERRORS as exc:
+            raise _http_error(exc) from exc
+        except RAG_ERRORS as exc:
+            first_error = first_error or exc
+            results.append(
+                EvaluationCaseResponse(
+                    question=case.question,
+                    expected_answer=case.expected_answer,
+                    generated_answer="",
+                    retrieval_relevance=0,
+                    groundedness=0,
+                    answer_correctness=0,
+                    citation_validity=0,
+                    overall_score=0,
+                    passed=False,
+                    error=str(exc),
+                )
+            )
+            continue
+
+        results.append(EvaluationCaseResponse.model_validate(result))
+
+    if first_error is not None and all(result.error for result in results):
+        raise _http_error(first_error) from first_error
+
+    return results
