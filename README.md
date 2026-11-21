@@ -6,6 +6,10 @@ A full-stack **Retrieval-Augmented Generation (RAG)** application that ingests a
 
 [**Try Web RAG Evaluator →**](https://web-rag-evaluator-frontend.onrender.com)
 
+The demo runs on free hosting and Google Gemini's free tier. The server sleeps
+when idle, so the first visit can take up to a minute to wake it up, and usage
+is limited per visitor to keep it free.
+
 ![Web RAG Evaluator](https://github.com/user-attachments/assets/77f9548e-9b65-4b2c-a2b1-aa9e39473555)
 
 ## ✨ Features
@@ -259,6 +263,30 @@ fixed question set, with confidence intervals and repeat runs.
 
 See [experiments/README.md](experiments/README.md) for writing a dataset,
 running the full grid, and writing up the results.
+
+## ☁️ Deploying the Free Live Demo (Render + Gemini)
+
+The backend runs on Render's free plan with Gemini's free tier:
+
+1. Get a free Gemini key at https://aistudio.google.com/apikey.
+2. In the Render dashboard, open the **backend** service → **Environment**
+   and set:
+
+   | Key | Value |
+   |---|---|
+   | `LLM_PROVIDER` | `gemini` |
+   | `PAGE_FETCHER` | `local` |
+   | `GEMINI_API_KEY` | your key (keep it secret; never commit it) |
+   | `FRONTEND_ORIGIN` | the frontend's URL, e.g. `https://web-rag-evaluator-frontend.onrender.com` |
+
+3. Save. Render redeploys the service automatically.
+4. Check `https://<backend>.onrender.com/api/info`: it should report
+   `"llm_provider": "gemini"` and `"page_fetcher": "local"`.
+
+Optional: `GEMINI_CHAT_MODEL` (default `gemini-flash-lite-latest`, an alias
+Google keeps on its current fast model), `RATE_LIMIT_PER_HOUR` (default 30
+per visitor) and `DAILY_LIMIT` (default 500 for everyone together). Ingesting
+or asking costs 1, and each evaluation case costs 1.
 
 ## ⚠️ Known Limitation
 

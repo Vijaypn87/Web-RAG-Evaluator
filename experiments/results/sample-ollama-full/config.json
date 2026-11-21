@@ -1,0 +1,29 @@
+{
+  "dataset": "experiments\\datasets\\sample_rag_wikipedia.json",
+  "dataset_name": "sample_rag_wikipedia",
+  "chunk_sizes": [
+    400,
+    800,
+    1200
+  ],
+  "top_k": [
+    2,
+    4,
+    8
+  ],
+  "overlap_ratio": 0.125,
+  "repeats": 1,
+  "retrieval_only": false,
+  "llm_provider": "ollama",
+  "embedding_model": "nomic-embed-text",
+  "chat_model": "llama3.2",
+  "evaluator_model": "llama3.2",
+  "page_fetcher": "local",
+  "git_commit": "271eb8c",
+  "finished_at": "2026-11-21T08:59:58.406314+00:00",
+  "config_keys": [
+    "chunk_size",
+    "overlap",
+    "top_k"
+  ]
+}

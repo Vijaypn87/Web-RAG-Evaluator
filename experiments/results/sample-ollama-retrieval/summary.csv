@@ -1,0 +1,10 @@
+chunk_size,overlap,top_k,cases,errors,chunk_count,retrieval_relevance,retrieval_relevance_ci95,retrieval_relevance_n,groundedness,groundedness_ci95,groundedness_n,answer_correctness,answer_correctness_ci95,answer_correctness_n,citation_validity,citation_validity_ci95,citation_validity_n,overall_score,overall_score_ci95,overall_score_n,hit_at_k,hit_at_k_ci95,hit_at_k_n,reciprocal_rank,reciprocal_rank_ci95,reciprocal_rank_n,latency_s,latency_s_ci95,latency_s_n,pass_rate
+400,50,2,10,0,93.0,,,0,,,0,,,0,,,0,,,0,0.6,0.32,10,0.55,0.308,10,2.996,0.704,10,
+400,50,4,10,0,93.0,,,0,,,0,,,0,,,0,,,0,0.8,0.261,10,0.617,0.267,10,2.996,0.704,10,
+400,50,8,10,0,93.0,,,0,,,0,,,0,,,0,,,0,0.9,0.196,10,0.633,0.252,10,2.996,0.704,10,
+800,100,2,10,0,47.0,,,0,,,0,,,0,,,0,,,0,0.8,0.261,10,0.8,0.261,10,2.112,0.011,10,
+800,100,4,10,0,47.0,,,0,,,0,,,0,,,0,,,0,0.8,0.261,10,0.8,0.261,10,2.112,0.011,10,
+800,100,8,10,0,47.0,,,0,,,0,,,0,,,0,,,0,1.0,0.0,10,0.834,0.217,10,2.112,0.011,10,
+1200,150,2,10,0,31.0,,,0,,,0,,,0,,,0,,,0,1.0,0.0,10,0.95,0.098,10,2.108,0.013,10,
+1200,150,4,10,0,31.0,,,0,,,0,,,0,,,0,,,0,1.0,0.0,10,0.95,0.098,10,2.108,0.013,10,
+1200,150,8,10,0,31.0,,,0,,,0,,,0,,,0,,,0,1.0,0.0,10,0.95,0.098,10,2.108,0.013,10,
