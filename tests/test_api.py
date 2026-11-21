@@ -26,7 +26,7 @@ def _score(question: str, expected_answer: str) -> dict:
         "citation_validity": 1.0,
         "overall_score": 1.0,
         "passed": True,
-        "explanations": {},
+        "explanations": {"groundedness": "Supported by the passages."},
     }
 
 
@@ -49,6 +49,8 @@ def test_one_failed_case_does_not_discard_the_others(monkeypatch):
     assert rows[1]["error"] == "OpenAI could not evaluate this case."
     assert rows[1]["overall_score"] == 0
     assert rows[0]["error"] is None
+    assert rows[0]["explanations"] == {"groundedness": "Supported by the passages."}
+    assert rows[1]["explanations"] == {}
 
 
 def test_all_cases_failing_fails_the_request(monkeypatch):
